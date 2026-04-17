@@ -35,8 +35,24 @@ function triggerDeviceSelectionChange() {
 // 端点输入格式说明（placeholder 与空值提示共用，与后端 adb=,name=,proxy=,retry= 约定一致）
 const ENDPOINT_FORMAT_HINT = 'adb=127.0.0.1:5037,name=本机';
 
+function syncViewportHeightVar() {
+    const viewportHeight = window.visualViewport && window.visualViewport.height
+        ? window.visualViewport.height
+        : window.innerHeight;
+    document.documentElement.style.setProperty('--app-vh', `${viewportHeight * 0.01}px`);
+}
+
+syncViewportHeightVar();
+window.addEventListener('resize', syncViewportHeightVar, { passive: true });
+window.addEventListener('orientationchange', syncViewportHeightVar, { passive: true });
+if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', syncViewportHeightVar, { passive: true });
+    window.visualViewport.addEventListener('scroll', syncViewportHeightVar, { passive: true });
+}
+
 // 初始化
 document.addEventListener('DOMContentLoaded', () => {
+    syncViewportHeightVar();
     initWebSocket();
     loadDevices();
     setupRefreshButton();
@@ -313,6 +329,708 @@ function getDeviceId(device) {
 
 // 设备注册表：deviceId -> { apiUdid }，唯一数据源；拔插后只更新 apiUdid，不依赖 DOM
 const deviceRegistry = new Map();
+
+function parseDeviceResolution(resolutionText) {
+    if (!resolutionText || typeof resolutionText !== 'string') {
+        return null;
+    }
+    const match = resolutionText.trim().match(/^(\d+)\s*x\s*(\d+)$/i);
+    if (!match) {
+        return null;
+    }
+    const width = parseInt(match[1], 10);
+    const height = parseInt(match[2], 10);
+    if (!width || !height) {
+        return null;
+    }
+    return { width, height };
+}
+
+function getPreferredDeviceResolution(deviceUDID) {
+    const conn = activeWebRTCConnections.get(deviceUDID);
+    if (conn && conn.deviceResolution) {
+        return conn.deviceResolution;
+    }
+    const wrapper = findWrapperByApiUdid(deviceUDID);
+    if (!wrapper) {
+        return null;
+    }
+    const card = wrapper.querySelector('.device-video-card');
+    const resolutionText = wrapper.dataset.resolution
+        || (card && card.dataset.resolution)
+        || (wrapper.deviceData && wrapper.deviceData.resolution)
+        || '';
+    const parsed = parseDeviceResolution(resolutionText);
+    if (parsed && conn) {
+        conn.deviceResolution = parsed;
+    }
+    return parsed;
+}
+
+function syncPreviewGeometry(deviceUDID, video, videoWrapper) {
+    if (!videoWrapper) {
+        return;
+    }
+    const deviceResolution = getPreferredDeviceResolution(deviceUDID);
+    if (deviceResolution) {
+        videoWrapper.style.aspectRatio = `${deviceResolution.width} / ${deviceResolution.height}`;
+    }
+    if (!video) {
+        return;
+    }
+    video.style.width = '100%';
+    video.style.height = '100%';
+    video.style.maxWidth = '100%';
+    video.style.maxHeight = '100%';
+    video.style.objectPosition = 'center center';
+    if (!deviceResolution || video.videoWidth <= 0 || video.videoHeight <= 0) {
+        video.style.objectFit = 'contain';
+        return;
+    }
+    const streamAspect = video.videoWidth / video.videoHeight;
+    const deviceAspect = deviceResolution.width / deviceResolution.height;
+    if (streamAspect > deviceAspect * 1.12) {
+        video.style.objectFit = 'cover';
+        video.style.objectPosition = 'right center';
+        return;
+    }
+    video.style.objectFit = 'contain';
+}
+
+function getDisplayLayerContainer(container) {
+    if (!container) {
+        return null;
+    }
+    if (container.classList && (container.classList.contains('device-video-wrapper') || container.classList.contains('focus-video-wrapper'))) {
+        return container;
+    }
+    return container.querySelector('.device-video-wrapper') || container.querySelector('.focus-video-wrapper') || container;
+}
+
+function ensureMobileGestureSurfaceElement(container, deviceUDID) {
+    const displayContainer = getDisplayLayerContainer(container);
+    if (!displayContainer) {
+        return null;
+    }
+    const mobileEnabled = isMobileRemoteControlPreferred();
+    let surface = displayContainer.querySelector(':scope > .mobile-gesture-surface');
+    if (!surface) {
+        surface = document.createElement('div');
+        surface.className = 'mobile-gesture-surface';
+        surface.setAttribute('aria-hidden', 'true');
+        displayContainer.appendChild(surface);
+    }
+    surface.dataset.udid = deviceUDID || '';
+    surface.dataset.role = 'mobile-gesture-surface';
+    surface.style.pointerEvents = mobileEnabled ? 'auto' : 'none';
+    displayContainer.classList.toggle('mobile-input-active', mobileEnabled);
+    if (!mobileEnabled) {
+        surface.__msRobotMobileSurfaceActive = 'false';
+    }
+    return surface;
+}
+
+function replaceDisplayLayerContent(container, contentNode, deviceUDID) {
+    const displayContainer = getDisplayLayerContainer(container);
+    if (!displayContainer) {
+        return null;
+    }
+    const surface = ensureMobileGestureSurfaceElement(displayContainer, deviceUDID);
+    Array.from(displayContainer.children).forEach((child) => {
+        if (child !== surface) {
+            child.remove();
+        }
+    });
+    if (contentNode) {
+        displayContainer.appendChild(contentNode);
+    }
+    if (surface) {
+        displayContainer.appendChild(surface);
+    }
+    if (contentNode && contentNode.tagName === 'VIDEO') {
+        refreshMobileInputBridge(deviceUDID, contentNode);
+    }
+    return displayContainer;
+}
+
+function replaceDisplayLayerMarkup(container, markup, deviceUDID) {
+    const displayContainer = replaceDisplayLayerContent(container, null, deviceUDID);
+    if (!displayContainer) {
+        return null;
+    }
+    if (markup) {
+        const fragment = document.createRange().createContextualFragment(markup);
+        const surface = displayContainer.querySelector(':scope > .mobile-gesture-surface');
+        displayContainer.insertBefore(fragment, surface || null);
+    }
+    return displayContainer;
+}
+
+function refreshMobileInputBridge(deviceUDID, video) {
+    if (!deviceUDID || !video) {
+        return;
+    }
+    const deviceIdForDom = getDeviceIdForApiUdid(deviceUDID);
+    const overlay = document.getElementById(`input-overlay-${safeIdFromUdid(deviceIdForDom)}`);
+    if (!overlay) {
+        return;
+    }
+    overlay.dataset.udid = deviceUDID;
+    overlay.__msRobotTouchBridgeUdid = deviceUDID;
+    overlay.__msRobotTouchBridgeVideo = video;
+    setupOverlayTouchBridge(overlay, video);
+}
+
+const mobileRemoteGestureQueues = new Map();
+const MOBILE_REMOTE_TAP_DELAY_MS = 40;
+const MOBILE_REMOTE_MOVE_DELAY_MS = 18;
+const MOBILE_REMOTE_DOWN_DELAY_MS = 24;
+const MOBILE_REMOTE_SWIPE_STEPS = 10;
+const MOBILE_SURFACE_TAP_THRESHOLD_PX = 10;
+
+function isMobileRemoteControlPreferred() {
+    try {
+        return window.matchMedia('(max-width: 768px)').matches
+            || (window.matchMedia('(pointer: coarse)').matches && window.matchMedia('(hover: none)').matches);
+    } catch (error) {
+        return window.innerWidth <= 768;
+    }
+}
+
+function shouldShowMobileFallbackControls() {
+    try {
+        const params = new URLSearchParams(window.location.search);
+        if (params.get('mobileFallback') === '1') {
+            return true;
+        }
+        return window.localStorage && window.localStorage.getItem('msrobot.mobileFallback') === '1';
+    } catch (error) {
+        return false;
+    }
+}
+
+function getDeviceFrameSizeForControl(deviceUDID) {
+    const conn = activeWebRTCConnections.get(deviceUDID);
+    const mapper = conn && conn.video && conn.video.__msRobotCoordinateMapper;
+    if (mapper && typeof mapper.getFrameSize === 'function') {
+        return mapper.getFrameSize();
+    }
+    return getPreferredDeviceResolution(deviceUDID) || { width: 1080, height: 1920 };
+}
+
+function getLowLevelEmitterForDevice(deviceUDID) {
+    const conn = activeWebRTCConnections.get(deviceUDID);
+    if (conn && conn.video && conn.video.__msRobotLowLevelEmitter) {
+        return conn.video.__msRobotLowLevelEmitter;
+    }
+    return null;
+}
+
+function waitForGestureStep(delayMs) {
+    if (!delayMs || delayMs <= 0) {
+        return Promise.resolve();
+    }
+    return new Promise((resolve) => setTimeout(resolve, delayMs));
+}
+
+function buildLinearGesturePoints(startPoint, endPoint, steps = MOBILE_REMOTE_SWIPE_STEPS) {
+    const points = [];
+    for (let step = 1; step <= steps; step += 1) {
+        const progress = step / steps;
+        points.push({
+            x: Math.round(startPoint.x + ((endPoint.x - startPoint.x) * progress)),
+            y: Math.round(startPoint.y + ((endPoint.y - startPoint.y) * progress))
+        });
+    }
+    return points;
+}
+
+function enqueueMobileRemoteGesture(deviceUDID, runner) {
+    const previous = mobileRemoteGestureQueues.get(deviceUDID) || Promise.resolve();
+    const next = previous.catch(() => {}).then(runner);
+    mobileRemoteGestureQueues.set(deviceUDID, next.finally(() => {
+        if (mobileRemoteGestureQueues.get(deviceUDID) === next) {
+            mobileRemoteGestureQueues.delete(deviceUDID);
+        }
+    }));
+    return next;
+}
+
+async function playLowLevelGestureSequence(deviceUDID, sequence) {
+    const emitter = getLowLevelEmitterForDevice(deviceUDID);
+    if (!emitter) {
+        return false;
+    }
+    for (const step of sequence) {
+        if (step.type === 'down' && typeof emitter.downAt === 'function') {
+            emitter.downAt(step.point, {});
+        } else if (step.type === 'move' && typeof emitter.moveAt === 'function') {
+            emitter.moveAt(step.point, {});
+        } else if (step.type === 'up' && typeof emitter.upAt === 'function') {
+            emitter.upAt(step.point);
+        } else if (step.type === 'cancel' && typeof emitter.cancelAt === 'function') {
+            emitter.cancelAt(step.point);
+        }
+        await waitForGestureStep(step.delay || 0);
+    }
+    return true;
+}
+
+function buildTapGestureSequence(point) {
+    return [
+        { type: 'down', point, delay: MOBILE_REMOTE_TAP_DELAY_MS },
+        { type: 'up', point, delay: 0 }
+    ];
+}
+
+function buildSwipeGestureSequence(startPoint, endPoint) {
+    const movePoints = buildLinearGesturePoints(startPoint, endPoint);
+    const sequence = [{ type: 'down', point: startPoint, delay: MOBILE_REMOTE_DOWN_DELAY_MS }];
+    movePoints.forEach((point) => {
+        sequence.push({ type: 'move', point, delay: MOBILE_REMOTE_MOVE_DELAY_MS });
+    });
+    sequence.push({ type: 'up', point: endPoint, delay: 0 });
+    return sequence;
+}
+
+function executeMobileRemoteTap(deviceUDID, point) {
+    return enqueueMobileRemoteGesture(deviceUDID, () => playLowLevelGestureSequence(deviceUDID, buildTapGestureSequence(point)));
+}
+
+function getSwipeEndpointsForDirection(deviceUDID, direction) {
+    const size = getDeviceFrameSizeForControl(deviceUDID);
+    const centerX = Math.round(size.width * 0.5);
+    const centerY = Math.round(size.height * 0.5);
+    const horizontalDistance = Math.round(size.width * 0.28);
+    const verticalDistance = Math.round(size.height * 0.22);
+    switch (direction) {
+    case 'swipe-up':
+        return {
+            start: { x: centerX, y: centerY + Math.round(verticalDistance * 0.4) },
+            end: { x: centerX, y: centerY - verticalDistance }
+        };
+    case 'swipe-down':
+        return {
+            start: { x: centerX, y: centerY - Math.round(verticalDistance * 0.4) },
+            end: { x: centerX, y: centerY + verticalDistance }
+        };
+    case 'swipe-left':
+        return {
+            start: { x: centerX + Math.round(horizontalDistance * 0.4), y: centerY },
+            end: { x: centerX - horizontalDistance, y: centerY }
+        };
+    case 'swipe-right':
+        return {
+            start: { x: centerX - Math.round(horizontalDistance * 0.4), y: centerY },
+            end: { x: centerX + horizontalDistance, y: centerY }
+        };
+    default:
+        return null;
+    }
+}
+
+function executeMobileRemoteSwipe(deviceUDID, direction) {
+    const endpoints = getSwipeEndpointsForDirection(deviceUDID, direction);
+    if (!endpoints) {
+        return Promise.resolve(false);
+    }
+    return enqueueMobileRemoteGesture(deviceUDID, () => playLowLevelGestureSequence(deviceUDID, buildSwipeGestureSequence(endpoints.start, endpoints.end)));
+}
+
+function executeMobileRemoteSwipePath(deviceUDID, startPoint, endPoint) {
+    if (!startPoint || !endPoint) {
+        return Promise.resolve(false);
+    }
+    return enqueueMobileRemoteGesture(deviceUDID, () => playLowLevelGestureSequence(deviceUDID, buildSwipeGestureSequence(startPoint, endPoint)));
+}
+
+function getCoordinateMapperForDevice(deviceUDID, video) {
+    const conn = activeWebRTCConnections.get(deviceUDID);
+    if (conn && conn.video && conn.video.__msRobotCoordinateMapper) {
+        return conn.video.__msRobotCoordinateMapper;
+    }
+    if (video && video.__msRobotCoordinateMapper) {
+        return video.__msRobotCoordinateMapper;
+    }
+    return null;
+}
+
+function extractSurfaceClientPoint(event) {
+    if (!event) {
+        return null;
+    }
+    if (event.changedTouches && event.changedTouches.length > 0) {
+        return {
+            clientX: event.changedTouches[0].clientX,
+            clientY: event.changedTouches[0].clientY
+        };
+    }
+    if (event.touches && event.touches.length > 0) {
+        return {
+            clientX: event.touches[0].clientX,
+            clientY: event.touches[0].clientY
+        };
+    }
+    if (typeof event.clientX === 'number' && typeof event.clientY === 'number') {
+        return {
+            clientX: event.clientX,
+            clientY: event.clientY
+        };
+    }
+    return null;
+}
+
+function setupMobileGestureSurfaceControl(surface, deviceUDID, video) {
+    if (!surface) {
+        return;
+    }
+    surface.dataset.udid = deviceUDID || '';
+    surface.__msRobotGestureVideo = video || null;
+    if (surface.dataset.bound === 'true') {
+        return;
+    }
+    surface.dataset.bound = 'true';
+    let activeGesture = null;
+    let suppressClickUntil = 0;
+
+    function preventAndFocus(event) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (surface.focus) {
+            surface.focus();
+        }
+    }
+
+    function resolveMapper() {
+        return getCoordinateMapperForDevice(surface.dataset.udid || '', surface.__msRobotGestureVideo);
+    }
+
+    function toDevicePoint(point) {
+        const mapper = resolveMapper();
+        if (!mapper || typeof mapper.toDeviceCoordinates !== 'function') {
+            return null;
+        }
+        return mapper.toDeviceCoordinates(point.clientX, point.clientY);
+    }
+
+    function beginGesture(pointerKey, point) {
+        if (!point || activeGesture) {
+            return;
+        }
+        activeGesture = {
+            pointerKey,
+            startClientX: point.clientX,
+            startClientY: point.clientY,
+            latestClientX: point.clientX,
+            latestClientY: point.clientY
+        };
+    }
+
+    function updateGesture(pointerKey, point) {
+        if (!activeGesture || activeGesture.pointerKey !== pointerKey || !point) {
+            return;
+        }
+        activeGesture.latestClientX = point.clientX;
+        activeGesture.latestClientY = point.clientY;
+    }
+
+    function finishGesture(pointerKey, point, cancelled = false) {
+        if (!activeGesture || activeGesture.pointerKey !== pointerKey || !point) {
+            return;
+        }
+        const gesture = activeGesture;
+        activeGesture = null;
+        if (cancelled) {
+            return;
+        }
+        const endClientX = point.clientX;
+        const endClientY = point.clientY;
+        const deltaX = endClientX - gesture.startClientX;
+        const deltaY = endClientY - gesture.startClientY;
+        const isSwipe = Math.abs(deltaX) > MOBILE_SURFACE_TAP_THRESHOLD_PX || Math.abs(deltaY) > MOBILE_SURFACE_TAP_THRESHOLD_PX;
+        const deviceUDIDForGesture = surface.dataset.udid || '';
+        if (!deviceUDIDForGesture) {
+            return;
+        }
+        const startPoint = toDevicePoint({ clientX: gesture.startClientX, clientY: gesture.startClientY });
+        const endPoint = toDevicePoint({ clientX: endClientX, clientY: endClientY });
+        if (!startPoint || !endPoint) {
+            return;
+        }
+        suppressClickUntil = Date.now() + 700;
+        if (isSwipe) {
+            executeMobileRemoteSwipePath(deviceUDIDForGesture, startPoint, endPoint);
+            return;
+        }
+        executeMobileRemoteTap(deviceUDIDForGesture, endPoint);
+    }
+
+    surface.addEventListener('touchstart', (event) => {
+        const point = extractSurfaceClientPoint(event);
+        if (!point) {
+            return;
+        }
+        preventAndFocus(event);
+        beginGesture(`touch-${event.changedTouches[0].identifier}`, point);
+    }, { passive: false });
+
+    surface.addEventListener('touchmove', (event) => {
+        if (!activeGesture) {
+            return;
+        }
+        const trackedTouch = Array.from(event.changedTouches || []).find((touch) => `touch-${touch.identifier}` === activeGesture.pointerKey);
+        const point = trackedTouch ? { clientX: trackedTouch.clientX, clientY: trackedTouch.clientY } : extractSurfaceClientPoint(event);
+        if (!point) {
+            return;
+        }
+        preventAndFocus(event);
+        updateGesture(activeGesture.pointerKey, point);
+    }, { passive: false });
+
+    surface.addEventListener('touchend', (event) => {
+        if (!activeGesture) {
+            return;
+        }
+        const trackedTouch = Array.from(event.changedTouches || []).find((touch) => `touch-${touch.identifier}` === activeGesture.pointerKey);
+        const point = trackedTouch ? { clientX: trackedTouch.clientX, clientY: trackedTouch.clientY } : extractSurfaceClientPoint(event);
+        if (!point) {
+            return;
+        }
+        preventAndFocus(event);
+        finishGesture(activeGesture.pointerKey, point, false);
+    }, { passive: false });
+
+    surface.addEventListener('touchcancel', (event) => {
+        if (!activeGesture) {
+            return;
+        }
+        const point = extractSurfaceClientPoint(event) || { clientX: activeGesture.latestClientX, clientY: activeGesture.latestClientY };
+        preventAndFocus(event);
+        finishGesture(activeGesture.pointerKey, point, true);
+    }, { passive: false });
+
+    surface.addEventListener('pointerdown', (event) => {
+        if (event.pointerType === 'mouse') {
+            return;
+        }
+        preventAndFocus(event);
+        beginGesture(`pointer-${event.pointerId}`, extractSurfaceClientPoint(event));
+    });
+
+    surface.addEventListener('pointermove', (event) => {
+        if (event.pointerType === 'mouse' || !activeGesture || activeGesture.pointerKey !== `pointer-${event.pointerId}`) {
+            return;
+        }
+        preventAndFocus(event);
+        updateGesture(activeGesture.pointerKey, extractSurfaceClientPoint(event));
+    });
+
+    surface.addEventListener('pointerup', (event) => {
+        if (event.pointerType === 'mouse' || !activeGesture || activeGesture.pointerKey !== `pointer-${event.pointerId}`) {
+            return;
+        }
+        preventAndFocus(event);
+        finishGesture(activeGesture.pointerKey, extractSurfaceClientPoint(event), false);
+    });
+
+    surface.addEventListener('pointercancel', (event) => {
+        if (event.pointerType === 'mouse' || !activeGesture || activeGesture.pointerKey !== `pointer-${event.pointerId}`) {
+            return;
+        }
+        preventAndFocus(event);
+        finishGesture(activeGesture.pointerKey, extractSurfaceClientPoint(event) || {
+            clientX: activeGesture.latestClientX,
+            clientY: activeGesture.latestClientY
+        }, true);
+    });
+
+    surface.addEventListener('mousedown', (event) => {
+        if (event.button !== 0) {
+            return;
+        }
+        preventAndFocus(event);
+        beginGesture('mouse-primary', extractSurfaceClientPoint(event));
+    });
+
+    surface.addEventListener('mousemove', (event) => {
+        if (!activeGesture || activeGesture.pointerKey !== 'mouse-primary') {
+            return;
+        }
+        preventAndFocus(event);
+        updateGesture('mouse-primary', extractSurfaceClientPoint(event));
+    });
+
+    surface.addEventListener('mouseup', (event) => {
+        if (!activeGesture || activeGesture.pointerKey !== 'mouse-primary') {
+            return;
+        }
+        preventAndFocus(event);
+        finishGesture('mouse-primary', extractSurfaceClientPoint(event), false);
+    });
+
+    surface.addEventListener('mouseleave', (event) => {
+        if (!activeGesture || activeGesture.pointerKey !== 'mouse-primary') {
+            return;
+        }
+        preventAndFocus(event);
+        finishGesture('mouse-primary', extractSurfaceClientPoint(event) || {
+            clientX: activeGesture.latestClientX,
+            clientY: activeGesture.latestClientY
+        }, false);
+    });
+
+    surface.addEventListener('click', (event) => {
+        if (Date.now() < suppressClickUntil) {
+            event.preventDefault();
+            event.stopPropagation();
+        }
+    }, true);
+}
+
+function mapMobileTouchPadToDevicePoint(deviceUDID, pad, clientX, clientY) {
+    const rect = pad.getBoundingClientRect();
+    const size = getDeviceFrameSizeForControl(deviceUDID);
+    const relativeX = rect.width > 0 ? (clientX - rect.left) / rect.width : 0.5;
+    const relativeY = rect.height > 0 ? (clientY - rect.top) / rect.height : 0.5;
+    return {
+        x: Math.max(0, Math.min(Math.round(relativeX * (size.width - 1)), size.width - 1)),
+        y: Math.max(0, Math.min(Math.round(relativeY * (size.height - 1)), size.height - 1))
+    };
+}
+
+function getMobileRemotePanelsForDevice(deviceUDID) {
+    const wrapper = findWrapperByApiUdid(deviceUDID);
+    if (!wrapper) {
+        return [];
+    }
+    return Array.from(wrapper.querySelectorAll('.mobile-remote-control-panel'));
+}
+
+function applyMobileRemotePanelState(panel, enabled) {
+    if (!panel) {
+        return;
+    }
+    panel.dataset.disabled = enabled ? '0' : '1';
+    panel.classList.toggle('disabled', !enabled);
+    panel.querySelectorAll('button').forEach((button) => {
+        button.disabled = !enabled;
+    });
+    const touchPad = panel.querySelector('.mobile-touchpad');
+    if (touchPad) {
+        touchPad.setAttribute('aria-disabled', enabled ? 'false' : 'true');
+    }
+}
+
+function setupMobileRemoteControlPanel(wrapper) {
+    if (!wrapper) {
+        return;
+    }
+    const panel = wrapper.querySelector('.mobile-remote-control-panel');
+    if (!panel || panel.dataset.bound === 'true') {
+        return;
+    }
+    panel.dataset.bound = 'true';
+    const showFallbackControls = shouldShowMobileFallbackControls();
+    wrapper.classList.toggle('mobile-fallback-visible', showFallbackControls);
+    wrapper.classList.toggle('mobile-remote-control-mode', showFallbackControls);
+    panel.hidden = !showFallbackControls;
+    panel.setAttribute('aria-hidden', showFallbackControls ? 'false' : 'true');
+    let lastSyntheticHandledAt = 0;
+
+    function markSyntheticHandled() {
+        lastSyntheticHandledAt = Date.now();
+    }
+
+    function shouldIgnoreFollowupClick() {
+        return (Date.now() - lastSyntheticHandledAt) < 650;
+    }
+
+    function getInteractionPoint(event) {
+        if (!event) {
+            return null;
+        }
+        const changedTouch = event.changedTouches && event.changedTouches[0];
+        if (changedTouch) {
+            return { clientX: changedTouch.clientX, clientY: changedTouch.clientY };
+        }
+        const touch = event.touches && event.touches[0];
+        if (touch) {
+            return { clientX: touch.clientX, clientY: touch.clientY };
+        }
+        if (typeof event.clientX === 'number' && typeof event.clientY === 'number') {
+            return { clientX: event.clientX, clientY: event.clientY };
+        }
+        return null;
+    }
+
+    function bindPressAction(element, handler) {
+        if (!element) {
+            return;
+        }
+        element.addEventListener('touchend', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            markSyntheticHandled();
+            handler(event);
+        }, { passive: false });
+        element.addEventListener('pointerup', (event) => {
+            if (event.pointerType === 'mouse' && isMobileRemoteControlPreferred()) {
+                return;
+            }
+            event.preventDefault();
+            event.stopPropagation();
+            markSyntheticHandled();
+            handler(event);
+        });
+        element.addEventListener('click', (event) => {
+            if (shouldIgnoreFollowupClick()) {
+                event.preventDefault();
+                event.stopPropagation();
+                return;
+            }
+            handler(event);
+        });
+        element.addEventListener('keydown', (event) => {
+            if (event.key !== 'Enter' && event.key !== ' ') {
+                return;
+            }
+            event.preventDefault();
+            handler(event);
+        });
+    }
+
+    const touchPad = panel.querySelector('.mobile-touchpad');
+    if (touchPad) {
+        bindPressAction(touchPad, (event) => {
+            if (panel.dataset.disabled === '1') {
+                return;
+            }
+            const deviceUDID = getApiUdidForCard(wrapper);
+            if (!deviceUDID) {
+                return;
+            }
+            const interactionPoint = getInteractionPoint(event);
+            if (!interactionPoint) {
+                return;
+            }
+            const point = mapMobileTouchPadToDevicePoint(deviceUDID, touchPad, interactionPoint.clientX, interactionPoint.clientY);
+            executeMobileRemoteTap(deviceUDID, point);
+        });
+    }
+
+    panel.querySelectorAll('[data-mobile-gesture]').forEach((button) => {
+        bindPressAction(button, () => {
+            if (panel.dataset.disabled === '1') {
+                return;
+            }
+            const deviceUDID = getApiUdidForCard(wrapper);
+            if (!deviceUDID) {
+                return;
+            }
+            executeMobileRemoteSwipe(deviceUDID, button.dataset.mobileGesture);
+        });
+    });
+}
 
 // 从卡片 wrapper 取当前用于 API 的 udid（从注册表读，无则回退 deviceId）
 function getApiUdidForCard(wrapper) {
@@ -1505,15 +2223,22 @@ function updateDeviceCardStatus(wrapper, device) {
     if (!card) return;
     const deviceId = getDeviceId(device);
     const apiUdid = getDeviceApiUdid(device);
-    deviceRegistry.set(deviceId, { apiUdid });
+    deviceRegistry.set(deviceId, { apiUdid, resolution: device.resolution || '' });
+    wrapper.deviceData = device;
     wrapper.dataset.udid = apiUdid;
+    wrapper.dataset.resolution = device.resolution || '';
     card.dataset.udid = apiUdid;
+    card.dataset.resolution = device.resolution || '';
     if (device.status) {
         card.classList.remove('online', 'offline', 'busy');
         card.classList.add(device.status);
         card.dataset.status = device.status;
     }
     if (device.name != null) card.dataset.deviceName = device.name;
+    const mobileRemotePanel = wrapper.querySelector('.mobile-remote-control-panel');
+    if (mobileRemotePanel) {
+        mobileRemotePanel.dataset.udid = apiUdid;
+    }
     const nameElement = card.querySelector('.device-video-name');
     if (nameElement) {
         const deviceName = device.name || device.udid;
@@ -1521,18 +2246,27 @@ function updateDeviceCardStatus(wrapper, device) {
         let statusIcon = connectionState === DeviceConnectionState.CONNECTING ? '🟡' : connectionState === DeviceConnectionState.CONNECTED ? '🟢' : (device.status === 'online' ? '🟢' : device.status === 'offline' ? '🔴' : '🟡');
         nameElement.innerHTML = renderDeviceNameWithStatusHTML(deviceName, statusIcon, false);
     }
+    const conn = activeWebRTCConnections.get(apiUdid);
+    if (conn) {
+        const deviceResolution = getPreferredDeviceResolution(apiUdid);
+        if (deviceResolution) {
+            conn.deviceResolution = deviceResolution;
+        }
+        syncPreviewGeometry(apiUdid, conn.video, wrapper.querySelector('.device-video-wrapper'));
+    }
 }
 
 // 创建设备卡片（带视频流）；deviceId 指代设备，API udid 存注册表，DOM id 用 deviceId 避免拔插后变
 function createDeviceCard(device) {
     const deviceId = getDeviceId(device);
     const apiUdid = getDeviceApiUdid(device);
-    deviceRegistry.set(deviceId, { apiUdid });
+    deviceRegistry.set(deviceId, { apiUdid, resolution: device.resolution || '' });
 
     const wrapper = document.createElement('div');
     wrapper.className = 'device-card-wrapper';
     wrapper.dataset.deviceId = deviceId;
     wrapper.dataset.udid = apiUdid; // 显示用，请求用 getApiUdidForCard(wrapper)
+    wrapper.dataset.resolution = device.resolution || '';
     wrapper.deviceData = device;
 
     const card = document.createElement('div');
@@ -1542,6 +2276,7 @@ function createDeviceCard(device) {
     card.dataset.status = device.status;
     card.dataset.deviceName = device.name || device.udid;
     card.dataset.model = device.model || '未知型号';
+    card.dataset.resolution = device.resolution || '';
 
     const safeId = safeIdFromUdid(deviceId);
     const statusIcon = device.status === 'online' ? '🟢' : device.status === 'offline' ? '🔴' : '🟡';
@@ -1553,6 +2288,19 @@ function createDeviceCard(device) {
         <div class="device-video-container" id="video-container-${safeId}" tabindex="-1">
             <div class="device-video-wrapper" id="video-wrapper-${safeId}">
                 ${getLoadingStateHTML(device.model || '未知型号', apiUdid)}
+            </div>
+            <div class="mobile-remote-control-panel" id="mobile-remote-${safeId}" data-device-id="${escapeHtml(deviceId)}" data-udid="${escapeHtml(apiUdid)}" data-disabled="1">
+                <div class="mobile-remote-control-title">移动端控制</div>
+                <button class="mobile-gesture-btn mobile-gesture-btn-up" data-mobile-gesture="swipe-up" type="button" disabled>上滑</button>
+                <div class="mobile-touchpad" role="button" tabindex="0" aria-label="移动端触控板，点击发送点击">
+                    <div class="mobile-touchpad-label">触控板</div>
+                    <div class="mobile-touchpad-subtitle">点击发送点击</div>
+                </div>
+                <div class="mobile-gesture-row">
+                    <button class="mobile-gesture-btn" data-mobile-gesture="swipe-left" type="button" disabled>左滑</button>
+                    <button class="mobile-gesture-btn" data-mobile-gesture="swipe-right" type="button" disabled>右滑</button>
+                </div>
+                <button class="mobile-gesture-btn mobile-gesture-btn-down" data-mobile-gesture="swipe-down" type="button" disabled>下滑</button>
             </div>
             <div class="device-control-panel-bottom" id="control-panel-bottom-${safeId}">
                 <button class="control-btn-icon" data-action="back" title="返回" disabled>←</button>
@@ -1586,6 +2334,8 @@ function createDeviceCard(device) {
     // 组装结构
     wrapper.appendChild(card);
     wrapper.appendChild(rightPanel);
+    setupMobileRemoteControlPanel(wrapper);
+    applyMobileRemotePanelState(wrapper.querySelector('.mobile-remote-control-panel'), false);
     
     // 绑定事件
     const fullscreenBtn = card.querySelector('.fullscreen-btn');
@@ -2141,7 +2891,7 @@ function startDeviceStream(deviceUDID, container) {
     
     // 只清空 video-wrapper 的内容，保留按钮
     const videoWrapper = container.querySelector('.device-video-wrapper') || container;
-    videoWrapper.innerHTML = '<div class="loading-state"><p>⏳ 正在启动视频流...</p></div>';
+    replaceDisplayLayerMarkup(videoWrapper, '<div class="loading-state"><p>⏳ 正在启动视频流...</p></div>', deviceUDID);
     
     // 如果当前在全屏模式，也更新全屏界面的加载状态
     if (currentFullscreenDeviceUDID === deviceUDID) {
@@ -2182,7 +2932,7 @@ function startDeviceStream(deviceUDID, container) {
         })
         .catch(err => {
             console.error(`获取设备信息失败: ${err}`);
-            videoWrapper.innerHTML = createErrorStateHTML('❌ 无法获取设备信息', err.message || err.toString());
+            replaceDisplayLayerMarkup(videoWrapper, createErrorStateHTML('❌ 无法获取设备信息', err.message || err.toString()), deviceUDID);
         });
 }
 
@@ -2439,6 +3189,129 @@ function getIOSBrowserFlags() {
         (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
     const isIOSChrome = /CriOS/.test(navigator.userAgent);
     return { isIOS, isIOSChrome };
+}
+
+function resolveRTCPeerConnectionCtor() {
+    const ctor = window.RTCPeerConnection || window.webkitRTCPeerConnection || window.mozRTCPeerConnection;
+    return typeof ctor === 'function' ? ctor : null;
+}
+
+function resolveRTCSessionDescriptionCtor() {
+    const ctor = window.RTCSessionDescription || window.webkitRTCSessionDescription || window.mozRTCSessionDescription;
+    return typeof ctor === 'function' ? ctor : null;
+}
+
+function resolveMediaStreamCtor() {
+    const ctor = window.MediaStream || window.webkitMediaStream;
+    return typeof ctor === 'function' ? ctor : null;
+}
+
+function getWebRtcSupportDetails() {
+    const issues = [];
+    const notes = [];
+    const peerConnectionCtor = resolveRTCPeerConnectionCtor();
+    const sessionDescriptionCtor = resolveRTCSessionDescriptionCtor();
+    const mediaStreamCtor = resolveMediaStreamCtor();
+    const hasMediaDevices = !!(navigator.mediaDevices && typeof navigator.mediaDevices === 'object');
+    const isLikelyInsecureContext = window.isSecureContext === false &&
+        window.location &&
+        window.location.hostname !== 'localhost' &&
+        window.location.hostname !== '127.0.0.1';
+
+    if (!peerConnectionCtor) {
+        issues.push('当前浏览器或内嵌 WebView 没有可用的 RTCPeerConnection 构造器');
+    }
+    if (!hasMediaDevices) {
+        notes.push('navigator.mediaDevices 不可用；本项目虽然不采集本地摄像头，但这通常说明浏览器能力受限');
+    }
+    if (!sessionDescriptionCtor) {
+        notes.push('RTCSessionDescription 构造器不存在，将退回到标准的 SDP 对象写法');
+    }
+    if (!mediaStreamCtor) {
+        notes.push('MediaStream 构造器不存在；如果浏览器能直接提供远端 event.streams，仍会继续尝试播放');
+    }
+    if (isLikelyInsecureContext) {
+        notes.push('当前页面不是安全上下文，部分移动端内嵌环境会额外限制 WebRTC 能力');
+    }
+
+    return {
+        supported: issues.length === 0,
+        issues,
+        notes,
+        peerConnectionCtor,
+        sessionDescriptionCtor,
+        mediaStreamCtor,
+    };
+}
+
+function createCompatiblePeerConnection(configuration) {
+    const PeerConnection = resolveRTCPeerConnectionCtor();
+    if (!PeerConnection) {
+        throw new Error('当前浏览器或内嵌环境不支持 WebRTC（RTCPeerConnection 不可用）');
+    }
+    return new PeerConnection(configuration);
+}
+
+function normalizeRTCSessionDescription(description) {
+    const RTCSessionDescriptionCtor = resolveRTCSessionDescriptionCtor();
+    if (!RTCSessionDescriptionCtor) {
+        return description;
+    }
+    try {
+        return new RTCSessionDescriptionCtor(description);
+    } catch (error) {
+        console.warn('[WebRTC] RTCSessionDescription 构造失败，改用原始描述对象', error);
+        return description;
+    }
+}
+
+function createCompatibleMediaStream(event) {
+    if (event && Array.isArray(event.streams) && event.streams.length > 0 && event.streams[0]) {
+        return event.streams[0];
+    }
+    const MediaStreamCtor = resolveMediaStreamCtor();
+    if (!MediaStreamCtor) {
+        return null;
+    }
+    return new MediaStreamCtor();
+}
+
+function renderWebRtcCompatibilityState(targetContainer, title, issues, notes) {
+    if (!targetContainer) {
+        return;
+    }
+
+    const issueHtml = Array.isArray(issues) && issues.length > 0
+        ? `<ul style="margin: 10px 0 0 18px; text-align: left;">${issues.map(item => `<li>${escapeHtml(item)}</li>`).join('')}</ul>`
+        : '';
+    const notesHtml = Array.isArray(notes) && notes.length > 0
+        ? `<div style="margin-top: 10px; font-size: 12px; opacity: 0.92; text-align: left;">${notes.map(item => `• ${escapeHtml(item)}`).join('<br>')}</div>`
+        : '';
+
+    targetContainer.innerHTML = `
+        <div class="error-state webrtc-compatibility-state" style="max-width: 100%; padding: 18px 16px; text-align: left; color: #fff; background: linear-gradient(180deg, rgba(24, 33, 52, 0.94), rgba(13, 18, 31, 0.96)); border-radius: 12px;">
+            <div style="font-size: 16px; font-weight: 700; margin-bottom: 8px;">${escapeHtml(title)}</div>
+            <div style="font-size: 13px; line-height: 1.6;">
+                当前页面不会继续黑屏重试。建议优先使用最新版 Chrome、Edge、Safari，或改用系统浏览器打开，不要走受限的 App 内嵌页。
+            </div>
+            ${issueHtml}
+            ${notesHtml}
+        </div>
+    `;
+}
+
+function handleUnsupportedWebRtcEnvironment(deviceUDID, container, supportDetails) {
+    const issues = supportDetails && Array.isArray(supportDetails.issues) ? supportDetails.issues : [];
+    const notes = supportDetails && Array.isArray(supportDetails.notes) ? supportDetails.notes : [];
+    const targetContainer = getCorrectContainer(deviceUDID, container);
+    renderWebRtcCompatibilityState(
+        targetContainer,
+        '当前环境不支持 WebRTC，无法建立投屏连接',
+        issues,
+        notes
+    );
+    setDeviceConnectionState(deviceUDID, DeviceConnectionState.DISCONNECTED);
+    showNotification('当前浏览器/内嵌环境不支持 WebRTC，已停止重试并显示兼容性提示', deviceUDID, 3500, 'warning');
 }
 
 function logWebRtcVerbose(...args) {
@@ -2951,8 +3824,7 @@ function handleIncomingVideoTrack({
     if (!conn.videoStreamSet) {
         if (!targetContainer.contains(video)) {
             console.log(`设备 ${deviceUDID}: video元素未在容器中，添加到容器`);
-            targetContainer.innerHTML = '';
-            targetContainer.appendChild(video);
+            replaceDisplayLayerContent(targetContainer, video, deviceUDID);
         }
 
         const videoRect = video.getBoundingClientRect();
@@ -2967,6 +3839,7 @@ function handleIncomingVideoTrack({
 
         video.srcObject = combinedStream;
         conn.videoStreamSet = true;
+        conn.deviceResolution = getPreferredDeviceResolution(deviceUDID);
         syncAudioToggleButtons(deviceUDID, false); // 与保持 muted 一致，避免按钮显示已开但网页无声
         const audioTracksInStream = combinedStream.getAudioTracks().length;
         console.log(`设备 ${deviceUDID}: video.srcObject 已设置, 音频轨数=${audioTracksInStream}, video.muted=${video.muted}`);
@@ -2976,6 +3849,7 @@ function handleIncomingVideoTrack({
         }
 
         const correctVideoWrapper = container.querySelector('.device-video-wrapper') || targetContainer;
+        syncPreviewGeometry(deviceUDID, video, correctVideoWrapper);
         setupVideoClickHandler(deviceUDID, correctVideoWrapper);
 
         activeWebRTCConnections.set(deviceUDID, conn);
@@ -2995,6 +3869,12 @@ function handleIncomingVideoTrack({
 async function initWebRTCStream(deviceUDID, container) {
     // 确保使用正确的容器
     container = getCorrectContainer(deviceUDID, container);
+    const webrtcSupport = getWebRtcSupportDetails();
+    if (!webrtcSupport.supported) {
+        console.warn(`[WebRTC] 设备 ${deviceUDID}: 浏览器能力不足`, webrtcSupport);
+        handleUnsupportedWebRtcEnvironment(deviceUDID, container, webrtcSupport);
+        return;
+    }
     // 如果已有连接，先清理
     if (activeWebRTCConnections.has(deviceUDID)) {
         console.log(`清理设备 ${deviceUDID} 的旧连接...`);
@@ -3011,19 +3891,20 @@ async function initWebRTCStream(deviceUDID, container) {
     video.controls = false; // 实时 WebRTC 流不要用原生控件：时长多为 0、易误判为「视频坏了」
     // 对于实时流，不显示controls，因为duration不准确
     // 使用auto让视频自适应，保持比例（和专注模式一致）
-    video.style.width = 'auto';
-    video.style.height = 'auto';
+    video.style.width = '100%';
+    video.style.height = '100%';
     video.style.maxWidth = '100%';
     video.style.maxHeight = '100%';
     video.style.objectFit = 'contain';
+    video.style.objectPosition = 'center center';
     video.style.backgroundColor = '#000';
     video.style.display = 'block';
     
     // iOS Safari要求video元素必须在设置srcObject之前就添加到DOM
     // 立即将video元素添加到容器中
     let videoWrapper = container.querySelector('.device-video-wrapper') || container;
-    videoWrapper.innerHTML = ''; // 清空容器
-    videoWrapper.appendChild(video);
+    videoWrapper = replaceDisplayLayerContent(videoWrapper, video, deviceUDID) || videoWrapper;
+    syncPreviewGeometry(deviceUDID, video, videoWrapper);
     console.log(`设备 ${deviceUDID}: video元素已添加到DOM`);
 
     let colorCorrectStop = null;
@@ -3041,6 +3922,7 @@ async function initWebRTCStream(deviceUDID, container) {
     
     // 添加播放事件监听
     video.addEventListener('loadedmetadata', () => {
+        syncPreviewGeometry(deviceUDID, video, videoWrapper);
         // 视频元数据已加载，iOS需要在这里尝试播放
         if (isIOS && video.srcObject) {
             console.log(`设备 ${deviceUDID}: loadedmetadata事件触发，尝试播放 (Chrome: ${isIOSChrome})`);
@@ -3053,8 +3935,10 @@ async function initWebRTCStream(deviceUDID, container) {
     });
     
     video.addEventListener('playing', () => {
+        syncPreviewGeometry(deviceUDID, video, videoWrapper);
         // 视频开始播放（静默处理）
     });
+    video.addEventListener('resize', () => syncPreviewGeometry(deviceUDID, video, videoWrapper));
     
     // 对于实时流，不应该暂停。如果触发了pause事件，立即恢复
     let pauseRecoveryAttempts = 0;
@@ -3220,8 +4104,7 @@ async function initWebRTCStream(deviceUDID, container) {
                 if (video.parentElement === videoWrapper) {
                     videoWrapper.removeChild(video);
                 }
-                newVideoWrapper.appendChild(video);
-                videoWrapper = newVideoWrapper; // 更新引用
+                videoWrapper = replaceDisplayLayerContent(newVideoWrapper, video, deviceUDID) || newVideoWrapper; // 更新引用
             }
         }
     }
@@ -3237,7 +4120,7 @@ async function initWebRTCStream(deviceUDID, container) {
         const iceServers = await fetchIceServers();
         
         // 创建RTCPeerConnection（允许使用STUN和TURN，优先直连以减少延迟）
-        const pc = new RTCPeerConnection({
+        const pc = createCompatiblePeerConnection({
             iceServers: iceServers,
             iceTransportPolicy: 'all' // 允许使用STUN和TURN，优先直连
         });
@@ -3260,8 +4143,7 @@ async function initWebRTCStream(deviceUDID, container) {
             // 所以先保存播放状态
             const wasPlaying = !video.paused;
             const currentTime = video.currentTime;
-            finalContainer.innerHTML = '';
-            finalContainer.appendChild(video);
+            replaceDisplayLayerContent(finalContainer, video, deviceUDID);
             // 如果之前在播放，恢复播放
             if (wasPlaying && video.srcObject) {
                 video.play().catch(err => {
@@ -3270,7 +4152,7 @@ async function initWebRTCStream(deviceUDID, container) {
             }
         }
         
-        activeWebRTCConnections.set(deviceUDID, { pc, video, container: finalContainer, dataChannel: null, statusCheckInterval, combinedStream: null, videoStreamSet: false, colorCorrectStop });
+        activeWebRTCConnections.set(deviceUDID, { pc, video, container: finalContainer, dataChannel: null, statusCheckInterval, combinedStream: null, videoStreamSet: false, colorCorrectStop, deviceResolution: getPreferredDeviceResolution(deviceUDID) });
         // 已保存连接信息
         
         bindPeerConnectionLifecycleEvents(pc, deviceUDID);
@@ -3395,13 +4277,22 @@ async function initWebRTCStream(deviceUDID, container) {
             // 获取或创建统一的MediaStream
             let combinedStream = conn.combinedStream;
             if (!combinedStream) {
-                combinedStream = new MediaStream();
+                combinedStream = createCompatibleMediaStream(event);
+                if (!combinedStream) {
+                    throw new Error('当前浏览器缺少 MediaStream 能力，无法接收远端媒体流');
+                }
                 conn.combinedStream = combinedStream;
                 activeWebRTCConnections.set(deviceUDID, conn);
             }
             
             // 将轨道添加到统一的MediaStream
-            combinedStream.addTrack(track);
+            if (typeof combinedStream.addTrack === 'function') {
+                const hasTrackAlready = typeof combinedStream.getTracks === 'function' &&
+                    combinedStream.getTracks().some(existingTrack => existingTrack && existingTrack.id === track.id);
+                if (!hasTrackAlready) {
+                    combinedStream.addTrack(track);
+                }
+            }
             const trackKindLabel = track.kind === 'audio' ? '音频' : '视频';
 
             if (track.kind === 'audio') {
@@ -3472,8 +4363,7 @@ async function initWebRTCStream(deviceUDID, container) {
                     video.parentElement.removeChild(video);
                 }
                 // 清空目标容器并添加video
-                targetContainer.innerHTML = '';
-                targetContainer.appendChild(video);
+                replaceDisplayLayerContent(targetContainer, video, deviceUDID);
                 // 如果之前在播放，恢复播放
                 if (wasPlaying && video.srcObject) {
                     video.play().catch(err => {
@@ -3512,8 +4402,7 @@ async function initWebRTCStream(deviceUDID, container) {
             // 确保video元素在容器中且可见
             if (!targetContainer.contains(video)) {
                 console.warn(`设备 ${deviceUDID}: ⚠️ video元素不在容器中，重新添加`);
-                targetContainer.innerHTML = '';
-                targetContainer.appendChild(video);
+                replaceDisplayLayerContent(targetContainer, video, deviceUDID);
             }
             
             // 检查video元素的样式
@@ -3680,7 +4569,7 @@ async function initWebRTCStream(deviceUDID, container) {
                                 console.warn(`设备 ${deviceUDID}: ⚠️ Answer SDP中未找到DataChannel信息 (m=application)`);
                             }
                         }
-                        await pc.setRemoteDescription(new RTCSessionDescription(data.answer));
+                        await pc.setRemoteDescription(normalizeRTCSessionDescription(data.answer));
                         
                         // 处理后端返回的ICE候选
                         if (data.iceCandidates && Array.isArray(data.iceCandidates)) {
@@ -3720,8 +4609,7 @@ async function initWebRTCStream(deviceUDID, container) {
                                 video.parentElement.removeChild(video);
                             }
                             // 复用函数开头定义的videoWrapper变量（第687行）
-                            videoWrapper.innerHTML = '';
-                            videoWrapper.appendChild(video);
+                            videoWrapper = replaceDisplayLayerContent(videoWrapper, video, deviceUDID) || videoWrapper;
                             // 如果之前在播放，恢复播放
                             if (wasPlaying && video.srcObject) {
                                 video.play().catch(err => {
@@ -3810,7 +4698,7 @@ async function initWebRTCStream(deviceUDID, container) {
         throw new Error('服务器响应错误：重试次数已用完');
         
         // 设置远程Answer
-        await pc.setRemoteDescription(new RTCSessionDescription(data.answer));
+        await pc.setRemoteDescription(normalizeRTCSessionDescription(data.answer));
         
         // 确保使用正确的容器（对应设备的video-wrapper）
         const targetContainer = getCorrectContainer(deviceUDID, container);
@@ -3828,8 +4716,7 @@ async function initWebRTCStream(deviceUDID, container) {
             if (video.parentElement) {
                 video.parentElement.removeChild(video);
             }
-            targetContainer.innerHTML = '';
-            targetContainer.appendChild(video);
+            replaceDisplayLayerContent(targetContainer, video, deviceUDID);
             // video元素已添加到容器
             // 如果之前在播放，恢复播放
             if (wasPlaying && video.srcObject) {
@@ -3868,6 +4755,7 @@ async function initWebRTCStream(deviceUDID, container) {
         }
         
         // 创建文本输入框UI（点击视频时显示）
+        ensureMobileGestureSurfaceElement(targetContainer, deviceUDID);
         createTextInputPanel(deviceUDID, targetContainer);
         
         // 设置控制面板和键盘输入覆盖层
@@ -4027,7 +4915,7 @@ function restoreConnectionUI(deviceUDID) {
         video.remove();
     }
     const model = card.dataset.model || '未知型号';
-    videoWrapper.innerHTML = getLoadingStateHTML(model, deviceUDID);
+    replaceDisplayLayerMarkup(videoWrapper, getLoadingStateHTML(model, deviceUDID), deviceUDID);
     const startStreamBtn = videoWrapper.querySelector('.start-stream-btn');
     if (startStreamBtn) {
         startStreamBtn.onclick = (e) => {
@@ -4560,6 +5448,62 @@ function getDeviceController(deviceUDID) {
     return new DeviceController(deviceUDID, conn);
 }
 
+function getDirectControlScreenSize(deviceUDID) {
+    const conn = activeWebRTCConnections.get(deviceUDID);
+    if (conn && conn.video && conn.video.videoWidth > 0 && conn.video.videoHeight > 0) {
+        return { width: conn.video.videoWidth, height: conn.video.videoHeight };
+    }
+    const wrapper = typeof findWrapperByApiUdid === 'function' ? findWrapperByApiUdid(deviceUDID) : null;
+    if (wrapper) {
+        const card = wrapper.querySelector('.device-video-card');
+        const parsedResolution = parseDeviceResolution(
+            wrapper.dataset.resolution
+            || (card && card.dataset.resolution)
+            || (wrapper.deviceData && wrapper.deviceData.resolution)
+            || ''
+        );
+        if (parsedResolution) {
+            return parsedResolution;
+        }
+    }
+    return { width: 1080, height: 1920 };
+}
+
+function sendDirectControlMessage(deviceUDID, message) {
+    const controller = getDeviceController(deviceUDID);
+    if (!controller) {
+        console.error(`[TOUCH] sendDirectControlMessage - 未找到设备控制器: ${deviceUDID}`);
+        return false;
+    }
+    return controller.sendMessage(message);
+}
+
+function sendDirectTouchControlMessage(deviceUDID, x, y, action, pointerId = -1) {
+    if (!window.ControlCommands || typeof window.ControlCommands.toBigEndianBytes !== 'function') {
+        console.error('[TOUCH] sendDirectTouchControlMessage - window.ControlCommands 不可用');
+        return false;
+    }
+    const { toBigEndianBytes, ControlMessageType, MotionAction } = window.ControlCommands;
+    const pressure = 0xFFFF;
+    const actionButton = 0;
+    const buttons = (action === MotionAction.DOWN ||
+        action === MotionAction.POINTER_DOWN ||
+        action === MotionAction.MOVE) ? 1 : 0;
+    const { width: screenWidth, height: screenHeight } = getDirectControlScreenSize(deviceUDID);
+    const data = new Uint8Array([
+        action,
+        ...toBigEndianBytes(pointerId, 8),
+        ...toBigEndianBytes(x, 4),
+        ...toBigEndianBytes(y, 4),
+        ...toBigEndianBytes(screenWidth, 2),
+        ...toBigEndianBytes(screenHeight, 2),
+        ...toBigEndianBytes(pressure, 2),
+        ...toBigEndianBytes(actionButton, 4),
+        ...toBigEndianBytes(buttons, 4)
+    ]);
+    return sendDirectControlMessage(deviceUDID, new Uint8Array([ControlMessageType.INJECT_TOUCH_EVENT, ...data]));
+}
+
 // 广播事件到指定设备列表：每个设备控件自己处理坐标转换
 function broadcastEventToDevices(event, messageType, originalDataArray, targetDevices) {
     if (!event || !targetDevices || targetDevices.length === 0) {
@@ -4798,7 +5742,14 @@ function setupVideoMouseEvents(deviceUDID, video) {
     let isDragging = false;
     let lastTouchX = 0;
     let lastTouchY = 0;
+    let dragStartX = 0;
+    let dragStartY = 0;
     let touchStartTime = 0;
+    let directSwipeToken = 0;
+    let directSwipeTimers = [];
+    let mobileCompatMouseGesture = null;
+    let mobileCompatSwipeToken = 0;
+    let mobileCompatSwipeTimers = [];
     
     // 双指操作状态
     let isTwoFingerMode = false;
@@ -4812,6 +5763,121 @@ function setupVideoMouseEvents(deviceUDID, video) {
     let firstFingerIndicator = null;
     let secondFingerIndicator = null;
     let touchLine = null;
+    function shouldIgnoreCompatibilityMouse() {
+        if (video && video.__msRobotMobileSurfaceActive === 'true') {
+            return true;
+        }
+        return !!(window.MobileInputPipeline
+            && typeof window.MobileInputPipeline.shouldIgnoreCompatibilityMouse === 'function'
+            && window.MobileInputPipeline.shouldIgnoreCompatibilityMouse(deviceUDID));
+    }
+
+    function isMobileCompatMode() {
+        return video && video.__msRobotMobileSurfaceActive === 'true';
+    }
+
+    function clearMobileCompatSwipePlan() {
+        mobileCompatSwipeToken += 1;
+        mobileCompatSwipeTimers.forEach((timerId) => clearTimeout(timerId));
+        mobileCompatSwipeTimers = [];
+    }
+
+    function describeLegacyEventTarget(target) {
+        if (!target) return '';
+        const id = target.id ? `#${target.id}` : '';
+        const className = typeof target.className === 'string' && target.className.trim()
+            ? `.${target.className.trim().split(/\s+/).slice(0, 3).join('.')}`
+            : '';
+        return `${target.tagName || 'node'}${id}${className}`;
+    }
+
+    function reportLegacyMouseDiagnostic(eventName, layer, e) {
+        if (!window.MobileInputPipeline || typeof window.MobileInputPipeline.reportLegacyMouseDiagnostic !== 'function') {
+            return;
+        }
+        let path = [];
+        if (e && typeof e.composedPath === 'function') {
+            try {
+                path = e.composedPath().slice(0, 6).map((node) => describeLegacyEventTarget(node));
+            } catch (error) {
+                path = [];
+            }
+        }
+        window.MobileInputPipeline.reportLegacyMouseDiagnostic(deviceUDID, deviceUDID, {
+            eventType: eventName,
+            layer,
+            phase: e && e.eventPhase === Event.CAPTURING_PHASE ? 'capture' : (e && e.eventPhase === Event.BUBBLING_PHASE ? 'bubble' : 'target'),
+            target: describeLegacyEventTarget(e && e.target),
+            currentTarget: describeLegacyEventTarget(e && e.currentTarget),
+            path,
+            defaultPrevented: !!(e && e.defaultPrevented),
+            cancelBubble: !!(e && e.cancelBubble),
+            cancelable: !!(e && e.cancelable),
+            passive: false
+        });
+    }
+
+    function getInteractionSurfaceRect() {
+        const wrapper = video.parentElement;
+        if (wrapper) {
+            const overlay = wrapper.querySelector('.keyboard-input-overlay');
+            if (overlay) {
+                return overlay.getBoundingClientRect();
+            }
+            return wrapper.getBoundingClientRect();
+        }
+        return video.getBoundingClientRect();
+    }
+
+    function getVideoFrameSize() {
+        if (video.videoWidth > 0 && video.videoHeight > 0) {
+            return { width: video.videoWidth, height: video.videoHeight };
+        }
+        return { width: 1080, height: 1920 };
+    }
+
+    function getRenderedFrameMapping() {
+        const surfaceRect = getInteractionSurfaceRect();
+        const frameSize = getVideoFrameSize();
+        const preferredResolution = getPreferredDeviceResolution(deviceUDID) || frameSize;
+        const frameAspect = frameSize.width / frameSize.height;
+        const surfaceAspect = surfaceRect.width / surfaceRect.height;
+        const objectFit = ((video.style.objectFit || getComputedStyle(video).objectFit || 'contain') + '').toLowerCase();
+        const mapping = {
+            surfaceRect,
+            frameSize,
+            cropX: 0,
+            cropY: 0,
+            cropWidth: frameSize.width,
+            cropHeight: frameSize.height,
+            displayLeft: surfaceRect.left,
+            displayTop: surfaceRect.top,
+            displayWidth: surfaceRect.width,
+            displayHeight: surfaceRect.height,
+        };
+
+        if (objectFit === 'cover') {
+            const preferredAspect = preferredResolution.width / preferredResolution.height;
+            const cropWidth = Math.min(frameSize.width, Math.round(frameSize.height * preferredAspect));
+            if (frameAspect > preferredAspect && cropWidth > 0) {
+                mapping.cropWidth = cropWidth;
+                mapping.cropX = Math.max(0, frameSize.width - cropWidth);
+            }
+            return mapping;
+        }
+
+        if (frameAspect > surfaceAspect) {
+            mapping.displayWidth = surfaceRect.width;
+            mapping.displayHeight = surfaceRect.width / frameAspect;
+            mapping.displayTop = surfaceRect.top + (surfaceRect.height - mapping.displayHeight) / 2;
+        } else {
+            mapping.displayWidth = surfaceRect.height * frameAspect;
+            mapping.displayHeight = surfaceRect.height;
+            mapping.displayLeft = surfaceRect.left + (surfaceRect.width - mapping.displayWidth) / 2;
+        }
+
+        return mapping;
+    }
     
     // 创建双指操作可视化覆盖层
     function createTouchOverlay() {
@@ -4898,8 +5964,36 @@ function setupVideoMouseEvents(deviceUDID, video) {
     // 更新双指操作可视化
     function updateTouchVisualization() {
         if (!isTwoFingerMode || !touchOverlay) return;
+        {
+        const mapping = getRenderedFrameMapping();
+        const overlayParent = touchOverlay.parentElement;
+        if (!overlayParent) return;
+        const parentRect = overlayParent.getBoundingClientRect();
+        const offsetX = mapping.displayLeft - parentRect.left;
+        const offsetY = mapping.displayTop - parentRect.top;
+        const firstX = ((firstFingerX - mapping.cropX) / mapping.cropWidth) * mapping.displayWidth + offsetX;
+        const firstY = ((firstFingerY - mapping.cropY) / mapping.cropHeight) * mapping.displayHeight + offsetY;
+        const secondX = ((secondFingerX - mapping.cropX) / mapping.cropWidth) * mapping.displayWidth + offsetX;
+        const secondY = ((secondFingerY - mapping.cropY) / mapping.cropHeight) * mapping.displayHeight + offsetY;
+        firstFingerIndicator.style.left = firstX + 'px';
+        firstFingerIndicator.style.top = firstY + 'px';
+        firstFingerIndicator.style.display = 'block';
+        secondFingerIndicator.style.left = secondX + 'px';
+        secondFingerIndicator.style.top = secondY + 'px';
+        secondFingerIndicator.style.display = 'block';
+        const dx = secondX - firstX;
+        const dy = secondY - firstY;
+        const distance = Math.sqrt(dx * dx + dy * dy);
+        const angle = Math.atan2(dy, dx) * 180 / Math.PI;
+        touchLine.style.left = firstX + 'px';
+        touchLine.style.top = firstY + 'px';
+        touchLine.style.width = distance + 'px';
+        touchLine.style.transform = `rotate(${angle}deg)`;
+        touchLine.style.display = 'block';
+        }
+        return;
         
-        const videoRect = video.getBoundingClientRect();
+        const videoRect = getInteractionSurfaceRect();
         const deviceSize = getDeviceSize();
         
         // 获取覆盖层父容器（覆盖层所在的容器）的边界矩形
@@ -4968,6 +6062,11 @@ function setupVideoMouseEvents(deviceUDID, video) {
     
     // 获取设备屏幕尺寸（从video元素或设备信息）
     function getDeviceSize() {
+        return getVideoFrameSize();
+        const preferredResolution = getPreferredDeviceResolution(deviceUDID);
+        if (preferredResolution) {
+            return preferredResolution;
+        }
         // 优先使用video的实际尺寸
         if (video.videoWidth > 0 && video.videoHeight > 0) {
             return { width: video.videoWidth, height: video.videoHeight };
@@ -4979,7 +6078,20 @@ function setupVideoMouseEvents(deviceUDID, video) {
     
     // 将视频显示坐标转换为设备屏幕坐标
     function convertToDeviceCoordinates(clientX, clientY) {
-        const videoRect = video.getBoundingClientRect();
+        {
+        const mapping = getRenderedFrameMapping();
+        const relativeX = (clientX - mapping.displayLeft) / mapping.displayWidth;
+        const relativeY = (clientY - mapping.displayTop) / mapping.displayHeight;
+        const clampedX = Math.max(0, Math.min(relativeX, 1));
+        const clampedY = Math.max(0, Math.min(relativeY, 1));
+        const deviceX = Math.round(mapping.cropX + clampedX * mapping.cropWidth);
+        const deviceY = Math.round(mapping.cropY + clampedY * mapping.cropHeight);
+        return {
+            x: Math.max(0, Math.min(deviceX, mapping.frameSize.width - 1)),
+            y: Math.max(0, Math.min(deviceY, mapping.frameSize.height - 1))
+        };
+        }
+        const videoRect = getInteractionSurfaceRect();
         const deviceSize = getDeviceSize();
         
         const videoAspect = deviceSize.width / deviceSize.height;
@@ -5012,6 +6124,15 @@ function setupVideoMouseEvents(deviceUDID, video) {
     }
     
     // scrcpy pointerId 常量（使用 BigInt 以支持负数）
+    video.__msRobotCoordinateMapper = {
+        toDeviceCoordinates(clientX, clientY) {
+            return convertToDeviceCoordinates(clientX, clientY);
+        },
+        getFrameSize() {
+            return getVideoFrameSize();
+        }
+    };
+
     const SC_POINTER_ID_MOUSE = -1;
     const SC_POINTER_ID_GENERIC_FINGER = -2;
     const SC_POINTER_ID_VIRTUAL_FINGER = -3;
@@ -5037,11 +6158,403 @@ function setupVideoMouseEvents(deviceUDID, video) {
             y: Math.max(0, Math.min(vfingerY, deviceSize.height - 1))
         };
     }
+
+    function getPointerModifiers(source) {
+        return {
+            ctrlKey: !!(source && source.ctrlKey),
+            shiftKey: !!(source && source.shiftKey),
+        };
+    }
+
+    function emitPrimaryPointerDownAt(coords, modifiers = {}) {
+
+        if (isTwoFingerMode) {
+            hideTouchVisualization();
+            isTwoFingerMode = false;
+        }
+        if (isDragging) {
+            isDragging = false;
+        }
+
+        lastTouchX = coords.x;
+        lastTouchY = coords.y;
+        dragStartX = coords.x;
+        dragStartY = coords.y;
+        touchStartTime = Date.now();
+        isDragging = false;
+
+        const ctrlPressed = !!modifiers.ctrlKey;
+        const shiftPressed = !!modifiers.shiftKey;
+        const changeVfinger = !isTwoFingerMode && (ctrlPressed || shiftPressed);
+
+        if (changeVfinger) {
+            isTwoFingerMode = true;
+            const deviceSize = getDeviceSize();
+            vfingerInvertX = ctrlPressed !== shiftPressed;
+            vfingerInvertY = ctrlPressed;
+
+            const genericFingerX = coords.x;
+            const genericFingerY = coords.y;
+            const vfinger = calculateVirtualFinger(coords.x, coords.y, deviceSize);
+
+            secondFingerX = genericFingerX;
+            secondFingerY = genericFingerY;
+            firstFingerX = vfinger.x;
+            firstFingerY = vfinger.y;
+
+            createTouchOverlay();
+            updateTouchVisualization();
+
+            if (window.ControlCommands) {
+                window.ControlCommands.injectTouchEvent(deviceUDID, genericFingerX, genericFingerY, window.ControlCommands.MotionAction.DOWN, SC_POINTER_ID_GENERIC_FINGER);
+                window.ControlCommands.injectTouchEvent(deviceUDID, vfinger.x, vfinger.y, window.ControlCommands.MotionAction.DOWN, SC_POINTER_ID_VIRTUAL_FINGER);
+            } else {
+                console.error(`[TOUCH] window.ControlCommands 不存在！`);
+            }
+            return;
+        }
+
+        isTwoFingerMode = false;
+        if (window.ControlCommands) {
+            window.ControlCommands.injectTouchEvent(deviceUDID, coords.x, coords.y, window.ControlCommands.MotionAction.DOWN, SC_POINTER_ID_MOUSE);
+        } else {
+            console.error(`[TOUCH] window.ControlCommands 不存在！`);
+        }
+    }
+
+    function emitPrimaryPointerMoveAt(coords, modifiers = {}) {
+        const ctrlPressed = !!modifiers.ctrlKey;
+        const shiftPressed = !!modifiers.shiftKey;
+
+        if (isTwoFingerMode && !(ctrlPressed || shiftPressed)) {
+            if (window.ControlCommands) {
+                window.ControlCommands.injectTouchEvent(deviceUDID, firstFingerX, firstFingerY, window.ControlCommands.MotionAction.UP, SC_POINTER_ID_VIRTUAL_FINGER);
+                window.ControlCommands.injectTouchEvent(deviceUDID, secondFingerX, secondFingerY, window.ControlCommands.MotionAction.UP, SC_POINTER_ID_GENERIC_FINGER);
+                window.ControlCommands.injectTouchEvent(deviceUDID, coords.x, coords.y, window.ControlCommands.MotionAction.DOWN, SC_POINTER_ID_MOUSE);
+            }
+            hideTouchVisualization();
+            isTwoFingerMode = false;
+            lastTouchX = coords.x;
+            lastTouchY = coords.y;
+            isDragging = false;
+            return;
+        }
+
+        if (isTwoFingerMode && (ctrlPressed || shiftPressed)) {
+            const newInvertX = ctrlPressed !== shiftPressed;
+            const newInvertY = ctrlPressed;
+
+            if (newInvertX !== vfingerInvertX || newInvertY !== vfingerInvertY) {
+                vfingerInvertX = newInvertX;
+                vfingerInvertY = newInvertY;
+            }
+
+            const deviceSize = getDeviceSize();
+            secondFingerX = coords.x;
+            secondFingerY = coords.y;
+
+            const vfinger = calculateVirtualFinger(coords.x, coords.y, deviceSize);
+            firstFingerX = vfinger.x;
+            firstFingerY = vfinger.y;
+
+            updateTouchVisualization();
+
+            if (window.ControlCommands) {
+                window.ControlCommands.injectTouchEvent(deviceUDID, coords.x, coords.y, window.ControlCommands.MotionAction.MOVE, SC_POINTER_ID_GENERIC_FINGER);
+                window.ControlCommands.injectTouchEvent(deviceUDID, vfinger.x, vfinger.y, window.ControlCommands.MotionAction.MOVE, SC_POINTER_ID_VIRTUAL_FINGER);
+            }
+
+            lastTouchX = coords.x;
+            lastTouchY = coords.y;
+            return;
+        }
+
+        const dragDistanceX = Math.abs(coords.x - dragStartX);
+        const dragDistanceY = Math.abs(coords.y - dragStartY);
+        if (dragDistanceX > 5 || dragDistanceY > 5) {
+            isDragging = true;
+        }
+
+        if (isDragging && window.ControlCommands) {
+            window.ControlCommands.injectTouchEvent(deviceUDID, coords.x, coords.y, window.ControlCommands.MotionAction.MOVE, SC_POINTER_ID_MOUSE);
+        }
+
+        lastTouchX = coords.x;
+        lastTouchY = coords.y;
+    }
+
+    function emitPrimaryPointerUpAt(coords) {
+
+        if (isTwoFingerMode) {
+            if (window.ControlCommands) {
+                window.ControlCommands.injectTouchEvent(deviceUDID, firstFingerX, firstFingerY, window.ControlCommands.MotionAction.UP, SC_POINTER_ID_VIRTUAL_FINGER);
+                window.ControlCommands.injectTouchEvent(deviceUDID, secondFingerX, secondFingerY, window.ControlCommands.MotionAction.UP, SC_POINTER_ID_GENERIC_FINGER);
+            }
+            hideTouchVisualization();
+            isTwoFingerMode = false;
+        } else if (window.ControlCommands) {
+            window.ControlCommands.injectTouchEvent(deviceUDID, coords.x, coords.y, window.ControlCommands.MotionAction.UP, SC_POINTER_ID_MOUSE);
+        }
+
+        isDragging = false;
+    }
+
+    function emitPrimaryPointerCancelAt(coords) {
+        if (isTwoFingerMode) {
+            if (window.ControlCommands) {
+                window.ControlCommands.injectTouchEvent(deviceUDID, firstFingerX, firstFingerY, window.ControlCommands.MotionAction.UP, SC_POINTER_ID_VIRTUAL_FINGER);
+                window.ControlCommands.injectTouchEvent(deviceUDID, secondFingerX, secondFingerY, window.ControlCommands.MotionAction.UP, SC_POINTER_ID_GENERIC_FINGER);
+            }
+            hideTouchVisualization();
+            isTwoFingerMode = false;
+        } else if (isDragging) {
+            if (window.ControlCommands) {
+                window.ControlCommands.injectTouchEvent(deviceUDID, coords.x, coords.y, window.ControlCommands.MotionAction.UP, SC_POINTER_ID_MOUSE);
+            }
+        }
+        isDragging = false;
+    }
+
+    function buildMobileCompatSwipePoints(startCoords, endCoords) {
+        const deltaX = endCoords.x - startCoords.x;
+        const deltaY = endCoords.y - startCoords.y;
+        const distance = Math.max(Math.abs(deltaX), Math.abs(deltaY));
+        const steps = Math.max(6, Math.min(18, Math.ceil(distance / 90)));
+        const points = [];
+        for (let index = 1; index <= steps; index++) {
+            const progress = index / steps;
+            points.push({
+                x: Math.round(startCoords.x + deltaX * progress),
+                y: Math.round(startCoords.y + deltaY * progress)
+            });
+        }
+        return points;
+    }
+
+    function emitMobileCompatSwipePath(startCoords, endCoords) {
+        clearMobileCompatSwipePlan();
+        const points = buildMobileCompatSwipePoints(startCoords, endCoords);
+        if (points.length === 0) {
+            emitPrimaryPointerUpAt(endCoords);
+            return;
+        }
+        points.forEach((point) => {
+            emitPrimaryPointerMoveAt(point, {});
+        });
+        emitPrimaryPointerUpAt(endCoords);
+    }
+
+    function beginMobileCompatMouseGesture(event) {
+        clearMobileCompatSwipePlan();
+        const coords = convertToDeviceCoordinates(event.clientX, event.clientY);
+        mobileCompatMouseGesture = {
+            startClientX: event.clientX,
+            startClientY: event.clientY,
+            startCoords: coords,
+            lastCoords: coords,
+            sawMove: false
+        };
+        emitPrimaryPointerDownAt(coords, {});
+    }
+
+    function moveMobileCompatMouseGesture(event) {
+        if (!mobileCompatMouseGesture) {
+            return;
+        }
+        const coords = convertToDeviceCoordinates(event.clientX, event.clientY);
+        if (coords.x === mobileCompatMouseGesture.lastCoords.x && coords.y === mobileCompatMouseGesture.lastCoords.y) {
+            return;
+        }
+        mobileCompatMouseGesture.sawMove = true;
+        mobileCompatMouseGesture.lastCoords = coords;
+        emitPrimaryPointerMoveAt(coords, {});
+    }
+
+    function endMobileCompatMouseGesture(event, cancelled = false) {
+        if (!mobileCompatMouseGesture) {
+            return;
+        }
+        const gesture = mobileCompatMouseGesture;
+        mobileCompatMouseGesture = null;
+        const coords = convertToDeviceCoordinates(event.clientX, event.clientY);
+        const clientDeltaX = Math.abs(event.clientX - gesture.startClientX);
+        const clientDeltaY = Math.abs(event.clientY - gesture.startClientY);
+        const deviceDeltaX = Math.abs(coords.x - gesture.startCoords.x);
+        const deviceDeltaY = Math.abs(coords.y - gesture.startCoords.y);
+        const shouldSwipe = !cancelled && (
+            gesture.sawMove
+            || clientDeltaX > 8
+            || clientDeltaY > 8
+            || deviceDeltaX > 24
+            || deviceDeltaY > 24
+        );
+
+        if (cancelled) {
+            emitPrimaryPointerCancelAt(coords);
+            return;
+        }
+
+        if (shouldSwipe) {
+            if (gesture.sawMove) {
+                emitPrimaryPointerMoveAt(coords, {});
+                emitPrimaryPointerUpAt(coords);
+            } else {
+                emitMobileCompatSwipePath(gesture.startCoords, coords);
+            }
+            return;
+        }
+
+        emitPrimaryPointerUpAt(coords);
+    }
+
+    function handlePrimaryPointerDown(point, modifiers = {}) {
+        emitPrimaryPointerDownAt(convertToDeviceCoordinates(point.clientX, point.clientY), modifiers);
+    }
+
+    function handlePrimaryPointerMove(point, modifiers = {}) {
+        emitPrimaryPointerMoveAt(convertToDeviceCoordinates(point.clientX, point.clientY), modifiers);
+    }
+
+    function handlePrimaryPointerUp(point) {
+        emitPrimaryPointerUpAt(convertToDeviceCoordinates(point.clientX, point.clientY));
+    }
+
+    function handlePrimaryPointerCancel(point) {
+        emitPrimaryPointerCancelAt(convertToDeviceCoordinates(point.clientX, point.clientY));
+    }
+
+    function clearDirectSwipeTimers() {
+        directSwipeToken += 1;
+        directSwipeTimers.forEach((timerId) => clearTimeout(timerId));
+        directSwipeTimers = [];
+    }
+
+    function emitDirectSwipePath(fromX, fromY, toX, toY) {
+        if (!window.ControlCommands) {
+            return;
+        }
+        const deltaX = toX - fromX;
+        const deltaY = toY - fromY;
+        const distance = Math.sqrt((deltaX * deltaX) + (deltaY * deltaY));
+        if (distance < 4) {
+            sendDirectTouchControlMessage(deviceUDID, toX, toY, window.ControlCommands.MotionAction.UP, SC_POINTER_ID_MOUSE);
+            return;
+        }
+        clearDirectSwipeTimers();
+        const swipeToken = directSwipeToken;
+        const stepCount = Math.max(5, Math.min(14, Math.ceil(distance / 120)));
+        for (let step = 1; step <= stepCount; step++) {
+            const delayMs = step * 16;
+            const progress = step / stepCount;
+            const timerId = setTimeout(() => {
+                if (swipeToken !== directSwipeToken) {
+                    return;
+                }
+                const moveX = Math.round(fromX + deltaX * progress);
+                const moveY = Math.round(fromY + deltaY * progress);
+                sendDirectTouchControlMessage(deviceUDID, moveX, moveY, window.ControlCommands.MotionAction.MOVE, SC_POINTER_ID_MOUSE);
+                if (step === stepCount) {
+                    sendDirectTouchControlMessage(deviceUDID, toX, toY, window.ControlCommands.MotionAction.UP, SC_POINTER_ID_MOUSE);
+                    clearDirectSwipeTimers();
+                }
+            }, delayMs);
+            directSwipeTimers.push(timerId);
+        }
+    }
+
+    video.__msRobotTouchBridge = {
+        down(point) {
+            clearDirectSwipeTimers();
+            const coords = convertToDeviceCoordinates(point.clientX, point.clientY);
+            lastTouchX = coords.x;
+            lastTouchY = coords.y;
+            dragStartX = coords.x;
+            dragStartY = coords.y;
+            touchStartTime = Date.now();
+            isDragging = false;
+            isTwoFingerMode = false;
+            sendDirectTouchControlMessage(deviceUDID, coords.x, coords.y, window.ControlCommands.MotionAction.DOWN, SC_POINTER_ID_MOUSE);
+        },
+        move(point) {
+            const coords = convertToDeviceCoordinates(point.clientX, point.clientY);
+            isDragging = true;
+            sendDirectTouchControlMessage(deviceUDID, coords.x, coords.y, window.ControlCommands.MotionAction.MOVE, SC_POINTER_ID_MOUSE);
+            lastTouchX = coords.x;
+            lastTouchY = coords.y;
+        },
+        up(point) {
+            const coords = convertToDeviceCoordinates(point.clientX, point.clientY);
+            if (window.ControlCommands) {
+                const dragDistanceX = Math.abs(coords.x - dragStartX);
+                const dragDistanceY = Math.abs(coords.y - dragStartY);
+                const shouldSynthesizeSwipe = !isDragging && (dragDistanceX > 6 || dragDistanceY > 6);
+                if (shouldSynthesizeSwipe) {
+                    isDragging = true;
+                    emitDirectSwipePath(dragStartX, dragStartY, coords.x, coords.y);
+                } else if (isDragging) {
+                    sendDirectTouchControlMessage(deviceUDID, coords.x, coords.y, window.ControlCommands.MotionAction.MOVE, SC_POINTER_ID_MOUSE);
+                    sendDirectTouchControlMessage(deviceUDID, coords.x, coords.y, window.ControlCommands.MotionAction.UP, SC_POINTER_ID_MOUSE);
+                } else {
+                    sendDirectTouchControlMessage(deviceUDID, coords.x, coords.y, window.ControlCommands.MotionAction.UP, SC_POINTER_ID_MOUSE);
+                }
+            }
+            isDragging = false;
+            isTwoFingerMode = false;
+        },
+        cancel(point) {
+            clearDirectSwipeTimers();
+            const coords = convertToDeviceCoordinates(point.clientX, point.clientY);
+            if (window.ControlCommands) {
+                sendDirectTouchControlMessage(deviceUDID, coords.x, coords.y, window.ControlCommands.MotionAction.UP, SC_POINTER_ID_MOUSE);
+            }
+            isDragging = false;
+            isTwoFingerMode = false;
+        }
+    };
+
+    video.__msRobotInputBridge = {
+        down(point, modifiers) {
+            handlePrimaryPointerDown(point, modifiers);
+        },
+        move(point, modifiers) {
+            handlePrimaryPointerMove(point, modifiers);
+        },
+        up(point) {
+            handlePrimaryPointerUp(point);
+        },
+        cancel(point) {
+            handlePrimaryPointerCancel(point);
+        }
+    };
+    video.__msRobotLowLevelEmitter = {
+        downAt(coords, modifiers) {
+            emitPrimaryPointerDownAt(coords, modifiers);
+        },
+        moveAt(coords, modifiers) {
+            emitPrimaryPointerMoveAt(coords, modifiers);
+        },
+        upAt(coords) {
+            emitPrimaryPointerUpAt(coords);
+        },
+        cancelAt(coords) {
+            emitPrimaryPointerCancelAt(coords);
+        }
+    };
     
     // 左键点击/拖动处理
     video.addEventListener('mousedown', (e) => {
+        reportLegacyMouseDiagnostic('mousedown', 'legacy-video', e);
+        if (isMobileCompatMode()) {
+            if (e.button !== 0) return;
+            e.preventDefault();
+            beginMobileCompatMouseGesture(e);
+            return;
+        }
+        if (shouldIgnoreCompatibilityMouse()) return;
         if (e.button !== 0) return;
         e.preventDefault();
+        handlePrimaryPointerDown(e, getPointerModifiers(e));
+        return;
 
         const coords = convertToDeviceCoordinates(e.clientX, e.clientY);
         
@@ -5113,8 +6626,18 @@ function setupVideoMouseEvents(deviceUDID, video) {
     });
     
     video.addEventListener('mousemove', (e) => {
-        if (e.buttons !== 1) return;
+        reportLegacyMouseDiagnostic('mousemove', 'legacy-video', e);
+        if (isMobileCompatMode()) {
+            if (!mobileCompatMouseGesture) return;
+            e.preventDefault();
+            moveMobileCompatMouseGesture(e);
+            return;
+        }
+        if (shouldIgnoreCompatibilityMouse()) return;
+        if (getSyntheticMouseButtons(e) !== 1) return;
         e.preventDefault();
+        handlePrimaryPointerMove(e, getPointerModifiers(e));
+        return;
         
         const coords = convertToDeviceCoordinates(e.clientX, e.clientY);
         const ctrlPressed = e.ctrlKey;
@@ -5187,8 +6710,18 @@ function setupVideoMouseEvents(deviceUDID, video) {
     });
     
     video.addEventListener('mouseup', (e) => {
+        reportLegacyMouseDiagnostic('mouseup', 'legacy-video', e);
+        if (isMobileCompatMode()) {
+            if (e.button !== 0) return;
+            e.preventDefault();
+            endMobileCompatMouseGesture(e, false);
+            return;
+        }
+        if (shouldIgnoreCompatibilityMouse()) return;
         if (e.button !== 0) return;
         e.preventDefault();
+        handlePrimaryPointerUp(e);
+        return;
         
         const coords = convertToDeviceCoordinates(e.clientX, e.clientY);
         
@@ -5212,6 +6745,14 @@ function setupVideoMouseEvents(deviceUDID, video) {
     
     // 鼠标离开时，如果正在拖动，发送UP事件
     video.addEventListener('mouseleave', (e) => {
+        if (isMobileCompatMode()) {
+            if (!mobileCompatMouseGesture) return;
+            endMobileCompatMouseGesture(e, true);
+            return;
+        }
+        if (shouldIgnoreCompatibilityMouse()) return;
+        handlePrimaryPointerCancel(e);
+        return;
         if (isTwoFingerMode) {
             if (window.ControlCommands) {
                 window.ControlCommands.injectTouchEvent(deviceUDID, firstFingerX, firstFingerY, window.ControlCommands.MotionAction.UP, SC_POINTER_ID_VIRTUAL_FINGER);
@@ -5227,6 +6768,12 @@ function setupVideoMouseEvents(deviceUDID, video) {
             isDragging = false;
         }
     });
+
+    document.addEventListener('mouseup', (e) => {
+        if (!isMobileCompatMode() || !mobileCompatMouseGesture || e.button !== 0) return;
+        e.preventDefault();
+        endMobileCompatMouseGesture(e, false);
+    }, true);
     
     const modifierKeyUpHandler = (e) => {
         if ((e.key === 'Control' || e.key === 'Shift') && isTwoFingerMode) {
@@ -5341,6 +6888,569 @@ function setupControlButtons(deviceId) {
 }
 
 // 设置控制面板和快捷键
+function getSyntheticMouseButtons(event) {
+    if (event && typeof event.__msRobotButtons === 'number') {
+        return event.__msRobotButtons;
+    }
+    return typeof event?.buttons === 'number' ? event.buttons : 0;
+}
+
+function dispatchSyntheticMouseEvent(target, type, init) {
+    if (!target) {
+        return;
+    }
+    const eventInit = Object.assign({
+        bubbles: true,
+        cancelable: true,
+        clientX: 0,
+        clientY: 0,
+        screenX: 0,
+        screenY: 0,
+        button: 0,
+        buttons: 0,
+        ctrlKey: false,
+        altKey: false,
+        shiftKey: false,
+        metaKey: false,
+    }, init || {});
+
+    try {
+        const syntheticEvent = new MouseEvent(type, eventInit);
+        syntheticEvent.__msRobotButtons = eventInit.buttons;
+        target.dispatchEvent(syntheticEvent);
+        return;
+    } catch (error) {
+        // 兼容旧 WebView：退回到传统 MouseEvent 初始化方式
+    }
+
+    const fallbackEvent = document.createEvent('MouseEvents');
+    fallbackEvent.initMouseEvent(
+        type,
+        true,
+        true,
+        window,
+        1,
+        eventInit.screenX,
+        eventInit.screenY,
+        eventInit.clientX,
+        eventInit.clientY,
+        eventInit.ctrlKey,
+        eventInit.altKey,
+        eventInit.shiftKey,
+        eventInit.metaKey,
+        eventInit.button,
+        null
+    );
+    fallbackEvent.__msRobotButtons = eventInit.buttons;
+    target.dispatchEvent(fallbackEvent);
+}
+
+function shouldUseOverlayPointerBridgeForMouse() {
+    try {
+        return window.matchMedia('(pointer: coarse)').matches
+            || window.matchMedia('(hover: none)').matches
+            || window.innerWidth <= 768;
+    } catch (error) {
+        return window.innerWidth <= 768;
+    }
+}
+
+function setupOverlayTouchBridge(inputOverlay, video) {
+    if (!inputOverlay || !video) {
+        return;
+    }
+
+    inputOverlay.__msRobotTouchBridgeVideo = video;
+    if (inputOverlay.dataset.udid) {
+        inputOverlay.__msRobotTouchBridgeUdid = inputOverlay.dataset.udid;
+    }
+
+    function getCurrentBridgeVideo() {
+        const bridgeDeviceUdid = inputOverlay.__msRobotTouchBridgeUdid || inputOverlay.dataset.udid;
+        if (bridgeDeviceUdid && activeWebRTCConnections.has(bridgeDeviceUdid)) {
+            const currentConn = activeWebRTCConnections.get(bridgeDeviceUdid);
+            if (currentConn && currentConn.video) {
+                inputOverlay.__msRobotTouchBridgeVideo = currentConn.video;
+                return currentConn.video;
+            }
+        }
+        return inputOverlay.__msRobotTouchBridgeVideo || video;
+    }
+
+    function ensureMobileGestureSurface() {
+        const bridgeVideo = getCurrentBridgeVideo();
+        const surface = ensureMobileGestureSurfaceElement(
+            bridgeVideo && typeof bridgeVideo.closest === 'function'
+                ? bridgeVideo.closest('.device-video-wrapper') || bridgeVideo.parentElement
+                : inputOverlay.parentElement,
+            inputOverlay.__msRobotTouchBridgeUdid || inputOverlay.dataset.udid || ''
+        );
+        return surface || bridgeVideo || inputOverlay;
+    }
+
+    function getMobileGestureSurface() {
+        return ensureMobileGestureSurface();
+    }
+
+    function describeBridgeNode(node) {
+        if (!node) return '';
+        const id = node.id ? `#${node.id}` : '';
+        const className = typeof node.className === 'string' && node.className.trim()
+            ? `.${node.className.trim().split(/\s+/).slice(0, 3).join('.')}`
+            : '';
+        return `${node.tagName || 'node'}${id}${className}`;
+    }
+
+    function reportBridgeLifecycle(eventType, detail) {
+        const apiUdid = inputOverlay.__msRobotTouchBridgeUdid || inputOverlay.dataset.udid || '';
+        if (!apiUdid || !window.MobileInputPipeline || typeof window.MobileInputPipeline.reportBridgeLifecycle !== 'function') {
+            return;
+        }
+        window.MobileInputPipeline.reportBridgeLifecycle(apiUdid, Object.assign({
+            eventType,
+            layer: 'app-mobile-bridge',
+            phase: '',
+            pointerType: '',
+            target: describeBridgeNode(inputOverlay),
+            currentTarget: describeBridgeNode(getCurrentBridgeVideo()),
+            path: [
+                describeBridgeNode(inputOverlay),
+                describeBridgeNode(inputOverlay.parentElement),
+                describeBridgeNode(getCurrentBridgeVideo())
+            ].filter(Boolean),
+            defaultPrevented: false,
+            cancelBubble: false,
+            cancelable: false,
+            passive: false
+        }, detail || {}));
+    }
+
+    const useNativeTouchBridge = (navigator.maxTouchPoints || 0) > 0 || 'ontouchstart' in window;
+    const enableMobileInputPipeline = isMobileRemoteControlPreferred() && useNativeTouchBridge;
+    if (enableMobileInputPipeline) {
+        const bridgeVideo = getCurrentBridgeVideo();
+        const gestureSurface = getMobileGestureSurface();
+        reportBridgeLifecycle('mobile-branch-enter', { phase: 'before-surface-attach' });
+        inputOverlay.style.touchAction = 'none';
+        inputOverlay.style.overscrollBehavior = 'none';
+        inputOverlay.style.pointerEvents = 'none';
+        if (bridgeVideo) {
+            bridgeVideo.style.touchAction = 'none';
+            bridgeVideo.style.pointerEvents = 'none';
+            bridgeVideo.classList.add('msrobot-display-layer');
+            bridgeVideo.__msRobotMobileSurfaceActive = 'true';
+        }
+        if (gestureSurface) {
+            gestureSurface.style.touchAction = 'none';
+            gestureSurface.style.overscrollBehavior = 'none';
+            gestureSurface.style.userSelect = 'none';
+            gestureSurface.style.webkitUserSelect = 'none';
+            gestureSurface.style.webkitTouchCallout = 'none';
+            gestureSurface.style.pointerEvents = 'auto';
+            gestureSurface.__msRobotMobileSurfaceActive = 'true';
+            gestureSurface.tabIndex = 0;
+        }
+        setupMobileGestureSurfaceControl(
+            gestureSurface,
+            inputOverlay.__msRobotTouchBridgeUdid || inputOverlay.dataset.udid || '',
+            bridgeVideo
+        );
+        inputOverlay.__msRobotMobileInputDetach = null;
+        inputOverlay.dataset.touchBridgeSetup = 'mobile';
+        reportBridgeLifecycle('mobile-branch-attached', {
+            phase: 'after-surface-attach',
+            target: describeBridgeNode(gestureSurface),
+            currentTarget: describeBridgeNode(bridgeVideo || video)
+        });
+        ['mousedown', 'mousemove', 'mouseup', 'click'].forEach((eventName) => {
+            inputOverlay.addEventListener(eventName, (e) => {
+                if (inputOverlay.dataset.touchBridgeSetup !== 'mobile') {
+                    return;
+                }
+                e.preventDefault();
+                e.stopPropagation();
+            }, true);
+        });
+        return;
+    }
+
+    if (typeof inputOverlay.__msRobotMobileInputDetach === 'function') {
+        inputOverlay.__msRobotMobileInputDetach();
+        inputOverlay.__msRobotMobileInputDetach = null;
+    }
+    const desktopBridgeVideo = getCurrentBridgeVideo();
+    const desktopGestureSurface = desktopBridgeVideo && typeof desktopBridgeVideo.closest === 'function'
+        ? desktopBridgeVideo.closest('.device-video-wrapper, .focus-video-wrapper')
+        : null;
+    inputOverlay.style.pointerEvents = 'auto';
+    if (desktopBridgeVideo) {
+        desktopBridgeVideo.style.pointerEvents = '';
+        desktopBridgeVideo.classList.remove('msrobot-display-layer');
+        desktopBridgeVideo.__msRobotMobileSurfaceActive = 'false';
+    }
+    if (desktopGestureSurface) {
+        desktopGestureSurface.classList.remove('mobile-input-active');
+        const surface = desktopGestureSurface.querySelector(':scope > .mobile-gesture-surface');
+        if (surface) {
+            surface.style.pointerEvents = 'none';
+            surface.__msRobotMobileSurfaceActive = 'false';
+        }
+    }
+
+    if (inputOverlay.dataset.touchBridgeSetup === 'true') {
+        video.style.touchAction = 'none';
+        return;
+    }
+
+    inputOverlay.dataset.touchBridgeSetup = 'true';
+    inputOverlay.style.touchAction = 'none';
+    inputOverlay.style.overscrollBehavior = 'none';
+    video.style.touchAction = 'none';
+    const usePointerBridgeForMouse = shouldUseOverlayPointerBridgeForMouse();
+
+    let activeGesture = null;
+
+    function getBridgeVideo() {
+        const bridgeDeviceUdid = inputOverlay.__msRobotTouchBridgeUdid || inputOverlay.dataset.udid;
+        if (bridgeDeviceUdid && activeWebRTCConnections.has(bridgeDeviceUdid)) {
+            const currentConn = activeWebRTCConnections.get(bridgeDeviceUdid);
+            if (currentConn && currentConn.video) {
+                inputOverlay.__msRobotTouchBridgeVideo = currentConn.video;
+                currentConn.video.style.touchAction = 'none';
+                return currentConn.video;
+            }
+        }
+        const fallbackVideo = inputOverlay.__msRobotTouchBridgeVideo || video;
+        if (fallbackVideo) {
+            fallbackVideo.style.touchAction = 'none';
+        }
+        return fallbackVideo;
+    }
+
+    function getInputBridge() {
+        const bridgeVideo = getBridgeVideo();
+        if (!bridgeVideo) {
+            return null;
+        }
+        return bridgeVideo.__msRobotInputBridge || null;
+    }
+
+    function getTouchBridge() {
+        const bridgeVideo = getBridgeVideo();
+        if (!bridgeVideo) {
+            return null;
+        }
+        return bridgeVideo.__msRobotTouchBridge || null;
+    }
+
+    const nativeTouchTarget = useNativeTouchBridge ? (getBridgeVideo() || inputOverlay) : inputOverlay;
+    if (useNativeTouchBridge) {
+        inputOverlay.style.pointerEvents = 'none';
+        nativeTouchTarget.style.touchAction = 'none';
+        nativeTouchTarget.style.webkitUserSelect = 'none';
+        nativeTouchTarget.style.userSelect = 'none';
+        nativeTouchTarget.style.webkitTouchCallout = 'none';
+    } else {
+        inputOverlay.style.pointerEvents = 'auto';
+    }
+
+    function beginGesture(pointerKey, point) {
+        if (activeGesture && activeGesture.pointerKey !== pointerKey) {
+            return false;
+        }
+        activeGesture = {
+            pointerKey,
+            startX: point.clientX,
+            startY: point.clientY,
+            moved: false,
+        };
+        const touchBridge = pointerKey.startsWith('touch-') ? getTouchBridge() : null;
+        if (touchBridge && typeof touchBridge.down === 'function') {
+            touchBridge.down(point);
+            return true;
+        }
+        const inputBridge = getInputBridge();
+        if (inputBridge && typeof inputBridge.down === 'function') {
+            inputBridge.down(point, getPointerModifiers(point));
+            return true;
+        }
+        const bridgeVideo = getBridgeVideo();
+        dispatchSyntheticMouseEvent(bridgeVideo, 'mousedown', {
+            clientX: point.clientX,
+            clientY: point.clientY,
+            button: 0,
+            buttons: 1,
+        });
+        return true;
+    }
+
+    function updateGesture(pointerKey, point) {
+        if (!activeGesture || activeGesture.pointerKey !== pointerKey) {
+            return;
+        }
+        if (pointerKey.startsWith('touch-')) {
+            activeGesture.moved = true;
+        } else if (Math.abs(point.clientX - activeGesture.startX) > 6 || Math.abs(point.clientY - activeGesture.startY) > 6) {
+            activeGesture.moved = true;
+        }
+        const touchBridge = pointerKey.startsWith('touch-') ? getTouchBridge() : null;
+        if (touchBridge && typeof touchBridge.move === 'function') {
+            touchBridge.move(point);
+            return;
+        }
+        const inputBridge = getInputBridge();
+        if (inputBridge && typeof inputBridge.move === 'function') {
+            inputBridge.move(point, getPointerModifiers(point));
+            return;
+        }
+        const bridgeVideo = getBridgeVideo();
+        dispatchSyntheticMouseEvent(bridgeVideo, 'mousemove', {
+            clientX: point.clientX,
+            clientY: point.clientY,
+            button: 0,
+            buttons: 1,
+        });
+    }
+
+    function endGesture(pointerKey, point) {
+        if (!activeGesture || activeGesture.pointerKey !== pointerKey) {
+            return;
+        }
+        if (pointerKey.startsWith('touch-')) {
+            const deltaX = Math.abs(point.clientX - activeGesture.startX);
+            const deltaY = Math.abs(point.clientY - activeGesture.startY);
+            if (deltaX > 6 || deltaY > 6) {
+                activeGesture.moved = true;
+            }
+        }
+        const touchBridge = pointerKey.startsWith('touch-') ? getTouchBridge() : null;
+        if (touchBridge && typeof touchBridge.up === 'function') {
+            touchBridge.up(point);
+        } else {
+        const inputBridge = getInputBridge();
+        if (inputBridge && typeof inputBridge.up === 'function') {
+            inputBridge.up(point);
+        } else {
+        const bridgeVideo = getBridgeVideo();
+        dispatchSyntheticMouseEvent(bridgeVideo, 'mouseup', {
+            clientX: point.clientX,
+            clientY: point.clientY,
+            button: 0,
+            buttons: 0,
+            });
+        }
+        }
+        if (!activeGesture.moved) {
+            const bridgeVideo = getBridgeVideo();
+            dispatchSyntheticMouseEvent(bridgeVideo, 'click', {
+                clientX: point.clientX,
+                clientY: point.clientY,
+                button: 0,
+                buttons: 0,
+            });
+        }
+        activeGesture = null;
+    }
+
+    function cancelGesture(pointerKey, point) {
+        if (!activeGesture || activeGesture.pointerKey !== pointerKey) {
+            return;
+        }
+        const touchBridge = pointerKey.startsWith('touch-') ? getTouchBridge() : null;
+        if (touchBridge && typeof touchBridge.cancel === 'function') {
+            touchBridge.cancel(point);
+        } else {
+        const inputBridge = getInputBridge();
+        if (inputBridge && typeof inputBridge.cancel === 'function') {
+            inputBridge.cancel(point);
+        } else {
+        const bridgeVideo = getBridgeVideo();
+        dispatchSyntheticMouseEvent(bridgeVideo, 'mouseup', {
+            clientX: point.clientX,
+            clientY: point.clientY,
+            button: 0,
+            buttons: 0,
+        });
+        }
+        }
+        activeGesture = null;
+    }
+
+    function getTrackedTouch(touchList) {
+        if (!activeGesture || !touchList) {
+            return null;
+        }
+        for (const touch of touchList) {
+            if (activeGesture.pointerKey === `touch-${touch.identifier}`) {
+                return touch;
+            }
+        }
+        return null;
+    }
+
+    if (window.PointerEvent) {
+        inputOverlay.addEventListener('pointerdown', (e) => {
+            if (useNativeTouchBridge && e.pointerType === 'touch') {
+                return;
+            }
+            if (e.pointerType === 'mouse' && !shouldUseOverlayPointerBridgeForMouse()) {
+                return;
+            }
+            inputOverlay.focus();
+            e.preventDefault();
+            e.stopPropagation();
+            if (inputOverlay.setPointerCapture) {
+                try {
+                    inputOverlay.setPointerCapture(e.pointerId);
+                } catch (error) {
+                    // 忽略当前环境不支持的情况
+                }
+            }
+            beginGesture(`pointer-${e.pointerId}`, e);
+        });
+        document.addEventListener('pointermove', (e) => {
+            if (useNativeTouchBridge && e.pointerType === 'touch') {
+                return;
+            }
+            if (e.pointerType === 'mouse' && !shouldUseOverlayPointerBridgeForMouse()) {
+                return;
+            }
+            if (!activeGesture || activeGesture.pointerKey !== `pointer-${e.pointerId}`) {
+                return;
+            }
+            e.preventDefault();
+            e.stopPropagation();
+            updateGesture(`pointer-${e.pointerId}`, e);
+        }, true);
+        document.addEventListener('pointerup', (e) => {
+            if (useNativeTouchBridge && e.pointerType === 'touch') {
+                return;
+            }
+            if (e.pointerType === 'mouse' && !shouldUseOverlayPointerBridgeForMouse()) {
+                return;
+            }
+            if (!activeGesture || activeGesture.pointerKey !== `pointer-${e.pointerId}`) {
+                return;
+            }
+            e.preventDefault();
+            e.stopPropagation();
+            endGesture(`pointer-${e.pointerId}`, e);
+            if (inputOverlay.releasePointerCapture) {
+                try {
+                    inputOverlay.releasePointerCapture(e.pointerId);
+                } catch (error) {
+                    // 忽略当前环境不支持的情况
+                }
+            }
+        }, true);
+        document.addEventListener('pointercancel', (e) => {
+            if (useNativeTouchBridge && e.pointerType === 'touch') {
+                return;
+            }
+            if (e.pointerType === 'mouse' && !shouldUseOverlayPointerBridgeForMouse()) {
+                return;
+            }
+            if (!activeGesture || activeGesture.pointerKey !== `pointer-${e.pointerId}`) {
+                return;
+            }
+            e.preventDefault();
+            e.stopPropagation();
+            cancelGesture(`pointer-${e.pointerId}`, e);
+            if (inputOverlay.releasePointerCapture) {
+                try {
+                    inputOverlay.releasePointerCapture(e.pointerId);
+                } catch (error) {
+                    // 忽略当前环境不支持的情况
+                }
+            }
+        }, true);
+        if (shouldUseOverlayPointerBridgeForMouse()) {
+            const mousePointerKey = 'mouse-fallback';
+            const handleMouseMove = (e) => {
+                if (!activeGesture || activeGesture.pointerKey !== mousePointerKey) {
+                    return;
+                }
+                e.preventDefault();
+                updateGesture(mousePointerKey, e);
+            };
+            const cleanupMouseFallback = () => {
+                document.removeEventListener('mousemove', handleMouseMove, true);
+                document.removeEventListener('mouseup', handleMouseUp, true);
+                window.removeEventListener('blur', cancelMouseFallback, true);
+            };
+            const handleMouseUp = (e) => {
+                if (!activeGesture || activeGesture.pointerKey !== mousePointerKey) {
+                    cleanupMouseFallback();
+                    return;
+                }
+                e.preventDefault();
+                endGesture(mousePointerKey, e);
+                cleanupMouseFallback();
+            };
+            const cancelMouseFallback = () => {
+                if (activeGesture && activeGesture.pointerKey === mousePointerKey) {
+                    cancelGesture(mousePointerKey, activeGesture);
+                }
+                cleanupMouseFallback();
+            };
+            inputOverlay.addEventListener('mousedown', (e) => {
+                if (e.target !== inputOverlay || activeGesture) {
+                    return;
+                }
+                inputOverlay.focus();
+                e.preventDefault();
+                e.stopPropagation();
+                beginGesture(mousePointerKey, e);
+                document.addEventListener('mousemove', handleMouseMove, true);
+                document.addEventListener('mouseup', handleMouseUp, true);
+                window.addEventListener('blur', cancelMouseFallback, true);
+            });
+        }
+    }
+
+    nativeTouchTarget.addEventListener('touchstart', (e) => {
+        if (activeGesture) {
+            return;
+        }
+        if (e.changedTouches.length === 0) {
+            return;
+        }
+        const touch = e.changedTouches[0];
+        if (inputOverlay && typeof inputOverlay.focus === 'function') {
+            inputOverlay.focus();
+        }
+        e.preventDefault();
+        beginGesture(`touch-${touch.identifier}`, touch);
+    }, { passive: false });
+
+    document.addEventListener('touchmove', (e) => {
+        const touch = getTrackedTouch(e.changedTouches);
+        if (!touch) {
+            return;
+        }
+        e.preventDefault();
+        updateGesture(`touch-${touch.identifier}`, touch);
+    }, { passive: false, capture: true });
+
+    document.addEventListener('touchend', (e) => {
+        const touch = getTrackedTouch(e.changedTouches);
+        if (!touch) {
+            return;
+        }
+        e.preventDefault();
+        endGesture(`touch-${touch.identifier}`, touch);
+    }, { passive: false, capture: true });
+
+    document.addEventListener('touchcancel', (e) => {
+        const touch = getTrackedTouch(e.changedTouches);
+        if (!touch) {
+            return;
+        }
+        e.preventDefault();
+        cancelGesture(`touch-${touch.identifier}`, touch);
+    }, { passive: false, capture: true });
+}
+
 function setupControlPanel(deviceUDID) {
     // 控制按钮始终显示，这里只需要设置快捷键
     
@@ -5359,14 +7469,55 @@ function setupControlPanel(deviceUDID) {
     
     // 设置inputOverlay使其能接收键盘事件
     inputOverlay.setAttribute('tabindex', '0');
+    inputOverlay.dataset.udid = deviceUDID;
+    const usePointerBridgeForMouse = shouldUseOverlayPointerBridgeForMouse();
+    function describeOverlayLegacyTarget(target) {
+        if (!target) return '';
+        const id = target.id ? `#${target.id}` : '';
+        const className = typeof target.className === 'string' && target.className.trim()
+            ? `.${target.className.trim().split(/\s+/).slice(0, 3).join('.')}`
+            : '';
+        return `${target.tagName || 'node'}${id}${className}`;
+    }
+    function reportOverlayLegacyMouse(eventName, e) {
+        if (!window.MobileInputPipeline || typeof window.MobileInputPipeline.reportLegacyMouseDiagnostic !== 'function') {
+            return;
+        }
+        let path = [];
+        if (e && typeof e.composedPath === 'function') {
+            try {
+                path = e.composedPath().slice(0, 6).map((node) => describeOverlayLegacyTarget(node));
+            } catch (error) {
+                path = [];
+            }
+        }
+        window.MobileInputPipeline.reportLegacyMouseDiagnostic(deviceUDID, deviceUDID, {
+            eventType: eventName,
+            layer: 'legacy-overlay',
+            phase: e && e.eventPhase === Event.CAPTURING_PHASE ? 'capture' : (e && e.eventPhase === Event.BUBBLING_PHASE ? 'bubble' : 'target'),
+            target: describeOverlayLegacyTarget(e && e.target),
+            currentTarget: describeOverlayLegacyTarget(e && e.currentTarget),
+            path,
+            defaultPrevented: !!(e && e.defaultPrevented),
+            cancelBubble: !!(e && e.cancelBubble),
+            cancelable: !!(e && e.cancelable),
+            passive: false
+        });
+    }
     inputOverlay.style.outline = 'none';
     inputOverlay.style.userSelect = 'none'; // 防止文本选择
+    inputOverlay.style.touchAction = 'none';
+    video.style.touchAction = 'none';
 
     // 确保inputOverlay可以获得焦点并接收键盘事件
     inputOverlay.focus();
 
     // 在mousedown时确保焦点设置到inputOverlay
     inputOverlay.addEventListener('mousedown', (e) => {
+        reportOverlayLegacyMouse('mousedown', e);
+        if (inputOverlay.dataset.touchBridgeSetup === 'mobile') {
+            return;
+        }
         if (e.target === inputOverlay) {
             // 设置焦点到inputOverlay
             inputOverlay.focus();
@@ -5375,46 +7526,115 @@ function setupControlPanel(deviceUDID) {
     });
 
     // 鼠标事件传递到video（用于触摸控制）
-    inputOverlay.addEventListener('click', (e) => {
+    inputOverlay.addEventListener('mousedown', (e) => {
+        reportOverlayLegacyMouse('mousedown', e);
+        if (inputOverlay.dataset.touchBridgeSetup === 'mobile') {
+            return;
+        }
+        if (usePointerBridgeForMouse) {
+            return;
+        }
         if (video && e.target === inputOverlay) {
-            // 传递点击事件到video
-            const clickEvent = new MouseEvent('click', {
-                bubbles: true,
-                cancelable: true,
+            dispatchSyntheticMouseEvent(video, 'mousedown', {
                 clientX: e.clientX,
                 clientY: e.clientY,
                 button: e.button,
-                buttons: e.buttons
+                buttons: e.buttons,
+                ctrlKey: e.ctrlKey,
+                altKey: e.altKey,
+                shiftKey: e.shiftKey,
+                metaKey: e.metaKey,
             });
-            video.dispatchEvent(clickEvent);
+        }
+    });
+
+    setupOverlayTouchBridge(inputOverlay, video);
+
+    inputOverlay.addEventListener('click', (e) => {
+        reportOverlayLegacyMouse('mouseup', e);
+        if (inputOverlay.dataset.touchBridgeSetup === 'mobile') {
+            return;
+        }
+        if (usePointerBridgeForMouse) {
+            return;
+        }
+        if (video && e.target === inputOverlay) {
+            // 传递点击事件到video
+            dispatchSyntheticMouseEvent(video, 'click', {
+                clientX: e.clientX,
+                clientY: e.clientY,
+                button: e.button,
+                buttons: e.buttons,
+                ctrlKey: e.ctrlKey,
+                altKey: e.altKey,
+                shiftKey: e.shiftKey,
+                metaKey: e.metaKey,
+            });
         }
     });
 
     inputOverlay.addEventListener('mousemove', (e) => {
+        reportOverlayLegacyMouse('mousemove', e);
+        if (inputOverlay.dataset.touchBridgeSetup === 'mobile') {
+            return;
+        }
+        if (usePointerBridgeForMouse) {
+            return;
+        }
         if (video && e.target === inputOverlay) {
-            const mouseEvent = new MouseEvent('mousemove', {
-                bubbles: true,
-                cancelable: true,
+            dispatchSyntheticMouseEvent(video, 'mousemove', {
                 clientX: e.clientX,
                 clientY: e.clientY,
                 button: e.button,
-                buttons: e.buttons
+                buttons: e.buttons,
+                ctrlKey: e.ctrlKey,
+                altKey: e.altKey,
+                shiftKey: e.shiftKey,
+                metaKey: e.metaKey,
             });
-            video.dispatchEvent(mouseEvent);
         }
     });
 
     inputOverlay.addEventListener('mouseup', (e) => {
+        reportOverlayLegacyMouse('mouseup', e);
+        if (inputOverlay.dataset.touchBridgeSetup === 'mobile') {
+            return;
+        }
+        if (usePointerBridgeForMouse) {
+            return;
+        }
         if (video && e.target === inputOverlay) {
-            const mouseEvent = new MouseEvent('mouseup', {
-                bubbles: true,
-                cancelable: true,
+            dispatchSyntheticMouseEvent(video, 'mouseup', {
                 clientX: e.clientX,
                 clientY: e.clientY,
                 button: e.button,
-                buttons: e.buttons
+                buttons: e.buttons,
+                ctrlKey: e.ctrlKey,
+                altKey: e.altKey,
+                shiftKey: e.shiftKey,
+                metaKey: e.metaKey,
             });
-            video.dispatchEvent(mouseEvent);
+        }
+    });
+
+    inputOverlay.addEventListener('mouseleave', (e) => {
+        if (inputOverlay.dataset.touchBridgeSetup === 'mobile') {
+            return;
+        }
+        if (usePointerBridgeForMouse) {
+            return;
+        }
+        if (video && e.target === inputOverlay) {
+            dispatchSyntheticMouseEvent(video, 'mouseleave', {
+                clientX: e.clientX,
+                clientY: e.clientY,
+                button: e.button,
+                buttons: e.buttons,
+                ctrlKey: e.ctrlKey,
+                altKey: e.altKey,
+                shiftKey: e.shiftKey,
+                metaKey: e.metaKey,
+            });
         }
     });
 
@@ -5438,14 +7658,16 @@ function setupControlPanel(deviceUDID) {
     inputOverlay.addEventListener('contextmenu', (e) => {
         if (video && e.target === inputOverlay) {
             e.preventDefault(); // 阻止默认右键菜单
-            const contextEvent = new MouseEvent('contextmenu', {
-                bubbles: true,
-                cancelable: true,
+            dispatchSyntheticMouseEvent(video, 'contextmenu', {
                 clientX: e.clientX,
                 clientY: e.clientY,
-                button: 2
+                button: 2,
+                buttons: e.buttons,
+                ctrlKey: e.ctrlKey,
+                altKey: e.altKey,
+                shiftKey: e.shiftKey,
+                metaKey: e.metaKey,
             });
-            video.dispatchEvent(contextEvent);
         }
     });
     
