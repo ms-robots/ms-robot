@@ -1584,9 +1584,11 @@ h2 {
     background-color: #c0392b !important;
 }
 
-/* Device list layout stabilization:
-   keep the outer card footprint stable and confine real media size changes
-   to the inner screen area only. */
+/* Layout cleanup:
+   keep the appended PR1 layout fixes in a few final groups so the current UI
+   stays stable without multiple overlapping override blocks. */
+
+/* 1) Device card footprint and media contain behavior */
 .devices-grid .device-grid-item,
 .devices-grid .device-card-wrapper,
 .devices-grid .device-video-card,
@@ -1595,9 +1597,22 @@ h2 {
     min-width: 0;
 }
 
+.devices-grid .device-grid-item {
+    min-height: 0;
+}
+
 .devices-grid .device-card-wrapper {
+    position: relative;
+    display: block;
     width: 100%;
-    align-items: center;
+    padding-right: calc(var(--device-side-panel-width) + 8px);
+    box-sizing: border-box;
+}
+
+.devices-grid .device-card-wrapper.landscape {
+    display: block;
+    padding-right: calc(var(--device-side-panel-width) + 8px);
+    align-items: initial;
 }
 
 .devices-grid .device-video-card {
@@ -1617,11 +1632,7 @@ h2 {
     max-height: none;
     flex: 0 0 auto;
     aspect-ratio: 9 / 16;
-}
-
-.devices-grid .device-card-wrapper.landscape {
-    flex-direction: row;
-    align-items: center;
+    overflow: hidden;
 }
 
 .devices-grid .device-card-wrapper.landscape .device-video-card {
@@ -1633,17 +1644,12 @@ h2 {
     aspect-ratio: 9 / 16;
 }
 
-.devices-grid .device-card-wrapper.landscape .device-control-panel {
-    width: auto;
-    padding: 0;
-    border-top: none;
-    flex-direction: column;
-    align-self: center;
-}
-
 .devices-grid .device-video-wrapper > video,
 .devices-grid .device-video-wrapper > img,
-.devices-grid .device-video-wrapper > canvas {
+.devices-grid .device-video-wrapper > canvas,
+.focus-video-wrapper video,
+.focus-video-wrapper img,
+.focus-video-wrapper canvas {
     width: 100% !important;
     height: 100% !important;
     max-width: 100% !important;
@@ -1653,14 +1659,13 @@ h2 {
     object-fit: contain !important;
 }
 
-/* Header toolbar compaction:
-   keep the three primary actions horizontal and readable across zoom levels. */
+/* 2) Header title and primary action row */
 .device-controls-header-top {
     flex-direction: column;
-    gap: 10px;
     flex-wrap: nowrap;
     align-items: stretch;
     justify-content: flex-start;
+    gap: 10px;
     min-width: 0;
     overflow: hidden;
 }
@@ -1678,44 +1683,28 @@ h2 {
     justify-content: flex-start;
     align-items: center;
     gap: 8px;
-    min-width: 0;
     flex: 0 0 auto;
     width: 100%;
     max-width: 100%;
+    min-width: 0;
     overflow-x: auto;
     overflow-y: hidden;
     overscroll-behavior-x: contain;
-    scrollbar-width: thin;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
     -webkit-overflow-scrolling: touch;
     padding-bottom: 2px;
 }
 
-.header-actions > * {
-    flex: 0 0 auto;
-}
-
 .header-actions::-webkit-scrollbar {
-    height: 6px;
+    display: none;
+    width: 0;
+    height: 0;
 }
 
-.header-actions::-webkit-scrollbar-thumb {
-    background: rgba(0, 0, 0, 0.18);
-    border-radius: 999px;
-}
-
-.header-actions::-webkit-scrollbar-track {
-    background: transparent;
-}
-
-.device-controls-header .devices-container-bar {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 6px 8px;
-}
-
-.device-controls-header .devices-container-bar .devices-bar-spacer {
-    flex: 1 1 24px;
+.header-actions > *,
+.batch-operations-dropdown {
+    flex: 0 0 auto;
 }
 
 .header-checkbox-btn,
@@ -1732,12 +1721,9 @@ h2 {
     box-sizing: border-box;
     line-height: 1.2;
     white-space: nowrap;
+    writing-mode: horizontal-tb;
     flex-wrap: nowrap;
     flex: 0 0 auto;
-}
-
-.header-checkbox-btn {
-    margin-left: 0;
 }
 
 .header-checkbox-btn-input,
@@ -1749,315 +1735,40 @@ h2 {
 
 .batch-operations-text,
 .file-manager-text,
-.header-checkbox-btn,
-.batch-operations-btn,
-.file-manager-btn {
-    writing-mode: horizontal-tb;
-}
-
-.batch-operations-text,
-.file-manager-text {
-    white-space: nowrap;
-}
-
-.batch-operations-dropdown {
-    display: inline-flex;
-    flex: 0 0 auto;
-}
-
 .devices-bar-btn {
     white-space: nowrap;
 }
 
-/* Fullscreen controls compaction:
-   tighten chrome so the media area stays visually dominant. */
-.focus-mode {
-    overflow: hidden;
-}
-
-.focus-header {
-    gap: 10px;
-    padding: 10px 14px;
-    min-height: 56px;
-    flex-wrap: wrap;
-    align-content: center;
-}
-
-.focus-header h3 {
-    flex: 1 1 180px;
-    min-width: 0;
-    font-size: 16px;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
-.focus-header .device-control-panel {
-    flex: 1 1 auto;
-    justify-content: flex-end;
-    gap: 6px;
-    padding: 0;
-}
-
-.focus-header .device-control-panel .control-btn-icon {
-    width: 34px;
-    height: 34px;
-    min-width: 34px;
-    font-size: 15px;
-    border-radius: 8px;
-}
-
-#exit-focus-mode {
-    width: 40px;
-    height: 40px;
-    min-width: 40px;
-    padding: 0;
-    font-size: 18px;
-    border-radius: 8px;
-    flex: 0 0 auto;
-}
-
-.focus-video-wrapper {
-    padding: 12px 16px;
-    align-items: center;
-    justify-content: center;
-}
-
-.focus-video-wrapper video,
-.focus-video-wrapper img,
-.focus-video-wrapper canvas {
-    max-width: 100%;
-    max-height: 100%;
-    object-fit: contain;
-    display: block;
-}
-
-.focus-controls {
-    padding: 8px 12px 10px;
-    gap: 8px;
-    flex-wrap: wrap;
-    justify-content: center;
-    align-items: center;
-    max-height: none;
-    overflow-y: auto;
-    overflow-x: hidden;
-}
-
-.focus-controls .device-control-panel-bottom {
-    min-width: 0;
-    display: flex;
-    flex-wrap: wrap;
-    justify-content: center;
-    align-items: center;
-    gap: 6px;
-    padding: 0;
-    background: transparent;
-    overflow: visible;
-}
-
-.focus-controls .device-control-panel-bottom .control-btn-icon {
-    flex: 0 0 auto;
-    width: 36px;
-    height: 36px;
-    min-width: 36px;
-    padding: 0;
-    font-size: 18px;
-    border: 1px solid rgba(255, 255, 255, 0.14);
-    border-right: 1px solid rgba(255, 255, 255, 0.14);
-    border-radius: 8px;
-    background: rgba(255, 255, 255, 0.08);
-}
-
-.focus-controls .device-control-panel-bottom .control-btn-icon:last-child {
-    border-right: 1px solid rgba(255, 255, 255, 0.14);
-}
-
-@media (max-width: 900px) {
-    .device-controls-header-top {
-        align-items: stretch;
-    }
-
-    .header-actions {
-        width: 100%;
-        justify-content: flex-start;
-    }
-
-    .header-checkbox-btn,
-    .batch-operations-btn,
-    .file-manager-btn {
-        max-width: none;
-    }
-}
-
-@media (max-width: 640px) {
-    .header-checkbox-btn,
-    .batch-operations-btn,
-    .file-manager-btn {
-        min-width: 104px;
-        padding: 8px 12px;
-        font-size: 13px;
-    }
-
-    .focus-header {
-        padding: 8px 10px;
-    }
-
-    .focus-header .device-control-panel {
-        justify-content: flex-start;
-    }
-
-    #exit-focus-mode {
-        width: 36px;
-        height: 36px;
-        min-width: 36px;
-    }
-
-    .focus-controls .device-control-panel-bottom .control-btn-icon,
-    .focus-header .device-control-panel .control-btn-icon {
-        width: 32px;
-        height: 32px;
-        min-width: 32px;
-    }
-}
-
-/* Device side control rail stabilization:
-   pin the right-side panel to the card height and scroll internally instead of
-   letting the button list expand the outer card/grid layout. */
-.devices-grid .device-card-wrapper {
-    --device-side-panel-width: 44px;
-    position: relative;
-    display: block;
-    padding-right: calc(var(--device-side-panel-width) + 8px);
-    box-sizing: border-box;
-}
-
-.devices-grid .device-card-wrapper.landscape {
-    display: block;
-    padding-right: calc(var(--device-side-panel-width) + 8px);
-    align-items: initial;
-}
-
-.devices-grid .device-video-card {
-    width: 100%;
-}
-
-.devices-grid .device-control-panel {
-    position: absolute;
-    top: 0;
-    right: 0;
-    bottom: 0;
-    width: var(--device-side-panel-width);
-    max-height: 100%;
-    padding: 4px 0;
-    gap: 2px;
-    justify-content: flex-start;
-    align-items: center;
-    align-self: auto;
-    overflow-y: auto;
-    overflow-x: hidden;
-    overscroll-behavior: contain;
-    scrollbar-width: thin;
-    scrollbar-gutter: stable;
-    box-sizing: border-box;
-}
-
-.devices-grid .device-card-wrapper.landscape .device-control-panel {
-    top: 0;
-    right: 0;
-    bottom: 0;
-    left: auto;
-    width: var(--device-side-panel-width);
-    max-width: var(--device-side-panel-width);
-    max-height: 100%;
-    padding: 4px 0;
-    border-top: none;
-    border-radius: 8px;
-    flex-direction: column;
-    flex-wrap: nowrap;
-    overflow-y: auto;
-    overflow-x: hidden;
-    overscroll-behavior: contain;
-}
-
-.devices-grid .device-control-panel::before,
-.devices-grid .device-control-panel::after {
-    content: "";
-    flex: 1 1 0;
-    min-height: 0;
-    min-width: 0;
-    pointer-events: none;
-}
-
-.devices-grid .device-control-panel::-webkit-scrollbar {
-    width: 6px;
-}
-
-.devices-grid .device-control-panel::-webkit-scrollbar-thumb {
-    background: rgba(255, 255, 255, 0.22);
-    border-radius: 999px;
-}
-
-.devices-grid .device-control-panel::-webkit-scrollbar-track {
-    background: transparent;
-}
-
-.devices-grid .device-control-panel .control-btn-icon {
-    width: 36px;
-    height: 36px;
-    min-width: 36px;
-    min-height: 36px;
-    font-size: 16px;
-    flex: 0 0 auto;
-}
-
-.devices-grid .device-card-wrapper.landscape .device-control-panel .control-btn-icon {
-    width: 36px;
-    height: 36px;
-    min-width: 36px;
-    min-height: 36px;
-    flex: 0 0 auto;
-    border-right: none;
-}
-
-/* Device bars alignment:
-   keep the summary bar and section header controls on one row with stable
-   left/right grouping and horizontal scrolling when space is tight. */
+/* 3) Device summary bar and grouped section header */
 .devices-container-bar,
 .devices-section-title {
     display: flex;
+    justify-content: flex-start;
     flex-wrap: nowrap;
     align-items: center;
+    gap: 8px;
     min-width: 0;
     overflow-x: auto;
     overflow-y: hidden;
-    scrollbar-width: thin;
+    overscroll-behavior-x: contain;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
     -webkit-overflow-scrolling: touch;
 }
 
 .devices-container-bar {
-    gap: 8px;
     min-height: 36px;
 }
 
 .devices-section-title {
-    gap: 8px;
     min-height: 40px;
 }
 
 .devices-container-bar::-webkit-scrollbar,
 .devices-section-title::-webkit-scrollbar {
-    height: 6px;
-}
-
-.devices-container-bar::-webkit-scrollbar-thumb,
-.devices-section-title::-webkit-scrollbar-thumb {
-    background: rgba(0, 0, 0, 0.16);
-    border-radius: 999px;
-}
-
-.devices-container-bar::-webkit-scrollbar-track,
-.devices-section-title::-webkit-scrollbar-track {
-    background: transparent;
+    display: none;
+    width: 0;
+    height: 0;
 }
 
 .devices-container-bar > *,
@@ -2104,15 +1815,20 @@ h2 {
     padding: 0;
 }
 
-.devices-container-bar .section-select-all {
-    margin-right: 0;
-    padding: 0 10px;
+.devices-container-bar .section-select-all,
+.section-select-all {
+    gap: 6px;
     min-height: 32px;
+    padding: 0 10px;
+    margin-right: 0;
 }
 
 .devices-section-title .devices-section-title-text {
-    flex: 0 0 auto;
+    flex: 1 1 auto;
     min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .devices-section-title .endpoint-info-btn {
@@ -2122,7 +1838,6 @@ h2 {
 
 .devices-section-title .section-select-all {
     margin-left: 0;
-    margin-right: 0;
 }
 
 .section-select-all,
@@ -2133,12 +1848,6 @@ h2 {
     align-items: center;
     justify-content: center;
     box-sizing: border-box;
-}
-
-.section-select-all {
-    gap: 6px;
-    min-height: 32px;
-    padding: 0 10px;
 }
 
 .section-select-all-checkbox {
@@ -2160,134 +1869,9 @@ h2 {
     height: 24px;
 }
 
-/* Final control panel overrides:
-   use one consistent rule set for card sidebars, keep fullscreen controls
-   separate, and avoid opacity/filter on the whole panel or whole button. */
-.device-card-wrapper {
-    --device-side-panel-width: 38px;
-}
-
-.device-card-wrapper > .device-control-panel {
-    position: absolute;
-    top: 0;
-    right: 0;
-    bottom: 0;
-    left: auto;
-    width: var(--device-side-panel-width);
-    max-width: var(--device-side-panel-width);
-    max-height: 100%;
-    display: flex;
-    flex-direction: column;
-    flex-wrap: nowrap;
-    justify-content: flex-start;
-    align-items: stretch;
-    gap: 0;
-    padding: 0;
-    background: transparent;
-    border: none;
-    border-radius: 0;
-    box-shadow: none;
-    backdrop-filter: none;
-    opacity: 1;
-    filter: none;
-    overflow-y: auto;
-    overflow-x: hidden;
-    overscroll-behavior: contain;
-    scrollbar-width: none;
-    -ms-overflow-style: none;
-    scrollbar-gutter: auto;
-    box-sizing: border-box;
-}
-
-.devices-grid .device-card-wrapper > .device-control-panel,
-.devices-grid .device-card-wrapper.landscape > .device-control-panel {
-    width: var(--device-side-panel-width);
-    max-width: var(--device-side-panel-width);
-    align-self: auto;
-    padding: 0;
-}
-
-.device-card-wrapper > .device-control-panel::before,
-.device-card-wrapper > .device-control-panel::after {
-    content: "";
-    flex: 1 1 0;
-    min-height: 0;
-    min-width: 0;
-    pointer-events: none;
-}
-
-.device-card-wrapper > .device-control-panel::-webkit-scrollbar {
-    display: none;
-    width: 0;
-    height: 0;
-}
-
-.device-card-wrapper > .device-control-panel > .control-btn-icon {
-    width: 100% !important;
-    max-width: 100%;
-    height: 34px;
-    min-width: 0;
-    min-height: 34px;
-    margin: 0;
-    padding: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    align-self: stretch;
-    flex: 0 0 34px;
-    box-sizing: border-box;
-    border: none;
-    border-radius: 0;
-    box-shadow: none;
-    backdrop-filter: none;
-    opacity: 1;
-    filter: none;
-    color: rgba(255, 255, 255, 0.96);
-}
-
-.device-card-wrapper > .device-control-panel > .control-btn-icon:not(:disabled) {
-    background: rgba(18, 18, 18, 0.88);
-    cursor: pointer;
-    opacity: 1;
-    filter: none;
-}
-
-.device-card-wrapper > .device-control-panel > .control-btn-icon:not(:disabled):hover {
-    background: rgba(42, 42, 42, 0.92);
-    transform: none;
-}
-
-.device-card-wrapper > .device-control-panel > .control-btn-icon:not(:disabled):active {
-    background: rgba(56, 56, 56, 0.94);
-    transform: scale(0.97);
-}
-
-.device-card-wrapper > .device-control-panel > .control-btn-icon:disabled {
-    background: rgba(20, 20, 20, 0.84);
-    color: rgba(255, 255, 255, 0.78);
-    opacity: 0.82;
-    filter: none;
-    cursor: not-allowed;
-    transform: none;
-}
-
-.device-card-wrapper > .device-control-panel > .control-btn-icon:disabled:hover,
-.device-card-wrapper > .device-control-panel > .control-btn-icon:disabled:active {
-    background: rgba(20, 20, 20, 0.84);
-    color: rgba(255, 255, 255, 0.78);
-    opacity: 0.82;
-    filter: none;
-    transform: none;
-}
-
-.device-card-wrapper.landscape > .device-control-panel {
-    gap: 0;
-    background: transparent;
-}
-
-.device-card-wrapper.landscape > .device-control-panel > .control-btn-icon {
-    width: 100% !important;
-    border-right: none;
+/* 4) Fullscreen and maximized control chrome */
+.focus-mode {
+    overflow: hidden;
 }
 
 .focus-header {
@@ -2297,11 +1881,17 @@ h2 {
     gap: 6px;
     min-width: 0;
     overflow: hidden;
+    padding: 10px 14px;
 }
 
 .focus-header h3 {
     flex: 0 1 auto;
     min-width: 120px;
+    margin: 0;
+    font-size: 16px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .focus-header .device-control-panel {
@@ -2328,7 +1918,8 @@ h2 {
     filter: none;
 }
 
-.focus-header .device-control-panel::-webkit-scrollbar {
+.focus-header .device-control-panel::-webkit-scrollbar,
+.focus-controls::-webkit-scrollbar {
     display: none;
     width: 0;
     height: 0;
@@ -2387,74 +1978,202 @@ h2 {
     transform: none;
 }
 
+.focus-video-wrapper {
+    padding: 12px 16px;
+    align-items: center;
+    justify-content: center;
+}
+
+.focus-controls {
+    padding: 8px 12px 10px;
+    gap: 8px;
+    flex-wrap: wrap;
+    justify-content: center;
+    align-items: center;
+    max-height: none;
+    overflow-y: auto;
+    overflow-x: hidden;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+}
+
+.focus-controls .device-control-panel-bottom {
+    min-width: 0;
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    align-items: center;
+    gap: 6px;
+    padding: 0;
+    background: transparent;
+    overflow: visible;
+}
+
+.focus-controls .device-control-panel-bottom .control-btn-icon {
+    flex: 0 0 auto;
+    width: 36px;
+    height: 36px;
+    min-width: 36px;
+    padding: 0;
+    font-size: 18px;
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.08);
+}
+
+.focus-close-btn,
 #exit-focus-mode {
     margin-left: auto;
     width: 36px;
     height: 36px;
     min-width: 36px;
+    padding: 0;
     font-size: 16px;
     background: rgba(231, 76, 60, 0.88);
     border: none;
+    border-radius: 8px;
     box-shadow: none;
+    flex: 0 0 auto;
 }
 
+.focus-close-btn:hover,
 #exit-focus-mode:hover {
     background: rgba(231, 76, 60, 1);
 }
 
+.focus-close-btn:active,
 #exit-focus-mode:active {
     transform: scale(0.96);
 }
 
-/* 旧的样式已移除，现在使用 .panels-container 中的统一样式 */
+/* 5) Final right-side control rail */
+.device-card-wrapper {
+    --device-side-panel-width: 38px;
+}
 
-@media (min-width: 769px) {
-    .device-card-wrapper:not(.landscape) {
-        --device-side-panel-width: 38px;
+.device-card-wrapper > .device-control-panel {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    left: auto;
+    width: var(--device-side-panel-width);
+    max-width: var(--device-side-panel-width);
+    max-height: 100%;
+    display: flex;
+    flex-direction: column;
+    flex-wrap: nowrap;
+    justify-content: flex-start;
+    align-items: stretch;
+    gap: 0;
+    padding: 0;
+    background: transparent;
+    border: none;
+    border-radius: 0;
+    box-shadow: none;
+    backdrop-filter: none;
+    opacity: 1;
+    filter: none;
+    overflow-y: auto;
+    overflow-x: hidden;
+    overscroll-behavior: contain;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+    scrollbar-gutter: auto;
+    box-sizing: border-box;
+}
+
+.device-card-wrapper > .device-control-panel::before,
+.device-card-wrapper > .device-control-panel::after {
+    content: '';
+    flex: 1 1 0;
+    min-height: 0;
+    min-width: 0;
+    pointer-events: none;
+}
+
+.device-card-wrapper > .device-control-panel::-webkit-scrollbar {
+    display: none;
+    width: 0;
+    height: 0;
+}
+
+.device-card-wrapper > .device-control-panel > .control-btn-icon {
+    width: 100% !important;
+    max-width: 100%;
+    height: 34px;
+    min-width: 0;
+    min-height: 34px;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    align-self: stretch;
+    flex: 0 0 34px;
+    box-sizing: border-box;
+    border: none;
+    border-radius: 0;
+    box-shadow: none;
+    backdrop-filter: none;
+    color: rgba(255, 255, 255, 0.96);
+    opacity: 1;
+    filter: none;
+}
+
+.device-card-wrapper > .device-control-panel > .control-btn-icon:not(:disabled) {
+    background: rgba(18, 18, 18, 0.88);
+    cursor: pointer;
+}
+
+.device-card-wrapper > .device-control-panel > .control-btn-icon:not(:disabled):hover {
+    background: rgba(42, 42, 42, 0.92);
+    transform: none;
+}
+
+.device-card-wrapper > .device-control-panel > .control-btn-icon:not(:disabled):active {
+    background: rgba(56, 56, 56, 0.94);
+    transform: scale(0.97);
+}
+
+.device-card-wrapper > .device-control-panel > .control-btn-icon:disabled {
+    background: rgba(20, 20, 20, 0.84);
+    color: rgba(255, 255, 255, 0.78);
+    opacity: 0.82;
+    filter: none;
+    cursor: not-allowed;
+    transform: none;
+}
+
+.device-card-wrapper > .device-control-panel > .control-btn-icon:disabled:hover,
+.device-card-wrapper > .device-control-panel > .control-btn-icon:disabled:active {
+    background: rgba(20, 20, 20, 0.84);
+    color: rgba(255, 255, 255, 0.78);
+    opacity: 0.82;
+    filter: none;
+    transform: none;
+}
+
+.device-card-wrapper.landscape > .device-control-panel {
+    gap: 0;
+    background: transparent;
+}
+
+.device-card-wrapper.landscape > .device-control-panel > .control-btn-icon {
+    width: 100% !important;
+    border-right: none;
+}
+
+@media (max-width: 900px) {
+    .header-actions {
+        width: 100%;
+        justify-content: flex-start;
     }
 
-    .device-card-wrapper:not(.landscape) > .device-control-panel,
-    .devices-grid .device-card-wrapper:not(.landscape) > .device-control-panel {
-        width: var(--device-side-panel-width);
-        max-width: var(--device-side-panel-width);
-        padding: 0;
-        gap: 0;
-        background: transparent;
-    }
-
-    .device-card-wrapper:not(.landscape) > .device-control-panel > .control-btn-icon,
-    .devices-grid .device-card-wrapper:not(.landscape) > .device-control-panel > .control-btn-icon {
-        height: 34px;
-        min-height: 34px;
-        flex: 0 0 34px;
-        font-size: 15px;
-    }
-
-    .device-card-wrapper:not(.landscape) > .device-control-panel > .control-btn-icon:not(:disabled),
-    .devices-grid .device-card-wrapper:not(.landscape) > .device-control-panel > .control-btn-icon:not(:disabled) {
-        background: rgba(18, 18, 18, 0.88);
-    }
-
-    .device-card-wrapper:not(.landscape) > .device-control-panel > .control-btn-icon:not(:disabled):hover,
-    .devices-grid .device-card-wrapper:not(.landscape) > .device-control-panel > .control-btn-icon:not(:disabled):hover {
-        background: rgba(255, 255, 255, 0.16);
-    }
-
-    .device-card-wrapper:not(.landscape) > .device-control-panel > .control-btn-icon:not(:disabled):active,
-    .devices-grid .device-card-wrapper:not(.landscape) > .device-control-panel > .control-btn-icon:not(:disabled):active {
-        background: rgba(255, 255, 255, 0.22);
-    }
-
-    .device-card-wrapper:not(.landscape) > .device-control-panel > .control-btn-icon:disabled,
-    .devices-grid .device-card-wrapper:not(.landscape) > .device-control-panel > .control-btn-icon:disabled,
-    .device-card-wrapper:not(.landscape) > .device-control-panel > .control-btn-icon:disabled:hover,
-    .devices-grid .device-card-wrapper:not(.landscape) > .device-control-panel > .control-btn-icon:disabled:hover,
-    .device-card-wrapper:not(.landscape) > .device-control-panel > .control-btn-icon:disabled:active,
-    .devices-grid .device-card-wrapper:not(.landscape) > .device-control-panel > .control-btn-icon:disabled:active {
-        background: rgba(20, 20, 20, 0.84);
-        color: rgba(255, 255, 255, 0.78);
-        opacity: 0.82;
-        filter: none;
+    .header-checkbox-btn,
+    .batch-operations-btn,
+    .file-manager-btn {
+        max-width: none;
     }
 }
 
@@ -2463,43 +2182,27 @@ h2 {
         --device-side-panel-width: 36px;
     }
 
-    .device-card-wrapper:not(.landscape) > .device-control-panel,
-    .devices-grid .device-card-wrapper:not(.landscape) > .device-control-panel {
-        width: var(--device-side-panel-width);
-        max-width: var(--device-side-panel-width);
-        padding: 0;
-        gap: 0;
-        background: transparent;
-    }
-
-    .device-card-wrapper:not(.landscape) > .device-control-panel > .control-btn-icon,
-    .devices-grid .device-card-wrapper:not(.landscape) > .device-control-panel > .control-btn-icon {
+    .device-card-wrapper:not(.landscape) > .device-control-panel > .control-btn-icon {
         height: 32px;
         min-height: 32px;
         flex: 0 0 32px;
         font-size: 14px;
     }
-
-    .device-card-wrapper:not(.landscape) > .device-control-panel > .control-btn-icon:not(:disabled),
-    .devices-grid .device-card-wrapper:not(.landscape) > .device-control-panel > .control-btn-icon:not(:disabled) {
-        background: rgba(18, 18, 18, 0.88);
-        opacity: 1;
-        filter: none;
-    }
-
-    .device-card-wrapper:not(.landscape) > .device-control-panel > .control-btn-icon:disabled,
-    .devices-grid .device-card-wrapper:not(.landscape) > .device-control-panel > .control-btn-icon:disabled,
-    .device-card-wrapper:not(.landscape) > .device-control-panel > .control-btn-icon:disabled:hover,
-    .devices-grid .device-card-wrapper:not(.landscape) > .device-control-panel > .control-btn-icon:disabled:hover,
-    .device-card-wrapper:not(.landscape) > .device-control-panel > .control-btn-icon:disabled:active,
-    .devices-grid .device-card-wrapper:not(.landscape) > .device-control-panel > .control-btn-icon:disabled:active {
-        background: rgba(20, 20, 20, 0.84);
-        color: rgba(255, 255, 255, 0.78);
-        opacity: 0.82;
-        filter: none;
-    }
 }
 
+@media (max-width: 640px) {
+    .header-checkbox-btn,
+    .batch-operations-btn,
+    .file-manager-btn {
+        min-width: 104px;
+        padding: 8px 12px;
+        font-size: 13px;
+    }
+
+    .focus-header {
+        padding: 8px 10px;
+    }
+}
 .file-upload-area {
     border: 2px dashed #3498db;
     border-radius: 8px;
