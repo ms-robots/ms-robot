@@ -1584,8 +1584,625 @@ h2 {
     background-color: #c0392b !important;
 }
 
-/* 旧的样式已移除，现在使用 .panels-container 中的统一样式 */
+/* Layout cleanup:
+   keep the appended PR1 layout fixes in a few final groups so the current UI
+   stays stable without multiple overlapping override blocks. */
 
+/* 1) Device card footprint and media contain behavior */
+.devices-grid .device-grid-item,
+.devices-grid .device-card-wrapper,
+.devices-grid .device-video-card,
+.devices-grid .device-video-container,
+.devices-grid .device-video-wrapper {
+    min-width: 0;
+}
+
+.devices-grid .device-grid-item {
+    min-height: 0;
+}
+
+.devices-grid .device-card-wrapper {
+    position: relative;
+    display: block;
+    width: 100%;
+    padding-right: calc(var(--device-side-panel-width) + 8px);
+    box-sizing: border-box;
+}
+
+.devices-grid .device-card-wrapper.landscape {
+    display: block;
+    padding-right: calc(var(--device-side-panel-width) + 8px);
+    align-items: initial;
+}
+
+.devices-grid .device-video-card {
+    width: 100%;
+    min-width: 0;
+    flex: 1 1 auto;
+}
+
+.devices-grid .device-video-container {
+    width: 100%;
+    min-width: 0;
+}
+
+.devices-grid .device-video-wrapper {
+    width: 100%;
+    max-width: none;
+    max-height: none;
+    flex: 0 0 auto;
+    aspect-ratio: 9 / 16;
+    overflow: hidden;
+}
+
+.devices-grid .device-card-wrapper.landscape .device-video-card {
+    width: 100%;
+    height: auto;
+}
+
+.devices-grid .device-card-wrapper.landscape .device-video-wrapper {
+    aspect-ratio: 9 / 16;
+}
+
+.devices-grid .device-video-wrapper > video,
+.devices-grid .device-video-wrapper > img,
+.devices-grid .device-video-wrapper > canvas,
+.focus-video-wrapper video,
+.focus-video-wrapper img,
+.focus-video-wrapper canvas {
+    width: 100% !important;
+    height: 100% !important;
+    max-width: 100% !important;
+    max-height: 100% !important;
+    flex: none !important;
+    display: block;
+    object-fit: contain !important;
+}
+
+/* 2) Header title and primary action row */
+.device-controls-header-top {
+    flex-direction: column;
+    flex-wrap: nowrap;
+    align-items: stretch;
+    justify-content: flex-start;
+    gap: 10px;
+    min-width: 0;
+    overflow: hidden;
+}
+
+.device-controls-header-top h2 {
+    flex: 0 0 auto;
+    width: 100%;
+    min-width: 0;
+    margin: 0;
+}
+
+.header-actions {
+    display: flex;
+    flex-wrap: nowrap;
+    justify-content: flex-start;
+    align-items: center;
+    gap: 8px;
+    flex: 0 0 auto;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+    overscroll-behavior-x: contain;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+    -webkit-overflow-scrolling: touch;
+    padding-bottom: 2px;
+}
+
+.header-actions::-webkit-scrollbar {
+    display: none;
+    width: 0;
+    height: 0;
+}
+
+.header-actions > *,
+.batch-operations-dropdown {
+    flex: 0 0 auto;
+}
+
+.header-checkbox-btn,
+.batch-operations-btn,
+.file-manager-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    min-height: 36px;
+    min-width: 112px;
+    max-width: 168px;
+    padding: 8px 14px;
+    box-sizing: border-box;
+    line-height: 1.2;
+    white-space: nowrap;
+    writing-mode: horizontal-tb;
+    flex-wrap: nowrap;
+    flex: 0 0 auto;
+}
+
+.header-checkbox-btn-input,
+.batch-operations-icon,
+.dropdown-arrow,
+.file-manager-icon {
+    flex: 0 0 auto;
+}
+
+.batch-operations-text,
+.file-manager-text,
+.devices-bar-btn {
+    white-space: nowrap;
+}
+
+/* 3) Device summary bar and grouped section header */
+.devices-container-bar,
+.devices-section-title {
+    display: flex;
+    justify-content: flex-start;
+    flex-wrap: nowrap;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+    overscroll-behavior-x: contain;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+    -webkit-overflow-scrolling: touch;
+}
+
+.devices-container-bar {
+    min-height: 36px;
+}
+
+.devices-section-title {
+    min-height: 40px;
+}
+
+.devices-container-bar::-webkit-scrollbar,
+.devices-section-title::-webkit-scrollbar {
+    display: none;
+    width: 0;
+    height: 0;
+}
+
+.devices-container-bar > *,
+.devices-section-title > * {
+    flex: 0 0 auto;
+}
+
+.device-status-displays-bar,
+.device-status-display,
+.device-status-display-total,
+.device-status-display-section,
+.endpoint-connection-status,
+.devices-section-arrow,
+.devices-section-title-text,
+.section-select-all,
+.section-select-all-text,
+.devices-bar-btn,
+.devices-section-refresh,
+.devices-section-disconnect,
+.endpoint-info-btn {
+    white-space: nowrap;
+}
+
+.devices-container-bar .devices-bar-spacer {
+    order: 0;
+    flex: 1 0 24px;
+    min-width: 24px;
+}
+
+#select-all-wrap,
+.devices-container-bar .section-select-all,
+#devices-bar-refresh-btn,
+#devices-view-mode-btn,
+#devices-connect-btn {
+    flex: 0 0 auto;
+}
+
+.devices-container-bar #devices-toggle-sections-btn.devices-bar-btn,
+#devices-view-mode-btn.devices-bar-btn,
+#devices-bar-refresh-btn.devices-bar-btn {
+    width: 32px;
+    min-width: 32px;
+    height: 32px;
+    padding: 0;
+}
+
+.devices-container-bar .section-select-all,
+.section-select-all {
+    gap: 6px;
+    min-height: 32px;
+    padding: 0 10px;
+    margin-right: 0;
+}
+
+.devices-section-title .devices-section-title-text {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.devices-section-title .endpoint-info-btn {
+    margin-left: auto;
+    margin-right: 0;
+}
+
+.devices-section-title .section-select-all {
+    margin-left: 0;
+}
+
+.section-select-all,
+.devices-section-refresh,
+.devices-section-disconnect,
+.endpoint-info-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    box-sizing: border-box;
+}
+
+.section-select-all-checkbox {
+    flex: 0 0 auto;
+}
+
+.devices-section-refresh,
+.devices-section-disconnect {
+    width: 32px;
+    min-width: 32px;
+    height: 32px;
+    padding: 0;
+    font-size: 14px;
+}
+
+.endpoint-info-btn {
+    width: 24px;
+    min-width: 24px;
+    height: 24px;
+}
+
+/* 4) Fullscreen and maximized control chrome */
+.focus-mode {
+    overflow: hidden;
+}
+
+.focus-header {
+    display: flex;
+    flex-wrap: nowrap;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    overflow: hidden;
+    padding: 10px 14px;
+}
+
+.focus-header h3 {
+    flex: 0 1 auto;
+    min-width: 120px;
+    margin: 0;
+    font-size: 16px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.focus-header .device-control-panel {
+    flex: 1 1 auto;
+    display: flex;
+    flex-wrap: nowrap;
+    justify-content: flex-start;
+    align-items: center;
+    gap: 3px;
+    min-width: 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+    overscroll-behavior-x: contain;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+    -webkit-overflow-scrolling: touch;
+    padding: 0 1px;
+    margin-left: 2px;
+    background: transparent;
+    border: none;
+    box-shadow: none;
+    backdrop-filter: none;
+    opacity: 1;
+    filter: none;
+}
+
+.focus-header .device-control-panel::-webkit-scrollbar,
+.focus-controls::-webkit-scrollbar {
+    display: none;
+    width: 0;
+    height: 0;
+}
+
+.focus-header .device-control-panel .control-btn-icon,
+.focus-controls .control-btn-icon {
+    background: transparent;
+    border: none;
+    box-shadow: none;
+    backdrop-filter: none;
+    opacity: 1;
+    filter: none;
+}
+
+.focus-header .device-control-panel .control-btn-icon {
+    flex: 0 0 auto;
+    width: 32px;
+    height: 32px;
+    min-width: 32px;
+    margin: 0;
+    padding: 0;
+    font-size: 15px;
+    border-radius: 6px;
+}
+
+.focus-header .device-control-panel .control-btn-icon:not(:disabled),
+.focus-controls .control-btn-icon:not(:disabled) {
+    color: rgba(255, 255, 255, 0.96);
+    cursor: pointer;
+}
+
+.focus-header .device-control-panel .control-btn-icon:disabled,
+.focus-controls .control-btn-icon:disabled {
+    color: rgba(255, 255, 255, 0.62);
+    cursor: not-allowed;
+}
+
+.focus-header .device-control-panel .control-btn-icon:not(:disabled):hover,
+.focus-controls .control-btn-icon:not(:disabled):hover {
+    background: rgba(255, 255, 255, 0.08);
+    transform: none;
+}
+
+.focus-header .device-control-panel .control-btn-icon:not(:disabled):active,
+.focus-controls .control-btn-icon:not(:disabled):active {
+    background: rgba(255, 255, 255, 0.14);
+    transform: scale(0.96);
+}
+
+.focus-header .device-control-panel .control-btn-icon:disabled:hover,
+.focus-header .device-control-panel .control-btn-icon:disabled:active,
+.focus-controls .control-btn-icon:disabled:hover,
+.focus-controls .control-btn-icon:disabled:active {
+    background: transparent;
+    transform: none;
+}
+
+.focus-video-wrapper {
+    padding: 12px 16px;
+    align-items: center;
+    justify-content: center;
+}
+
+.focus-controls {
+    padding: 8px 12px 10px;
+    gap: 8px;
+    flex-wrap: wrap;
+    justify-content: center;
+    align-items: center;
+    max-height: none;
+    overflow-y: auto;
+    overflow-x: hidden;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+}
+
+.focus-controls .device-control-panel-bottom {
+    min-width: 0;
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    align-items: center;
+    gap: 6px;
+    padding: 0;
+    background: transparent;
+    overflow: visible;
+}
+
+.focus-controls .device-control-panel-bottom .control-btn-icon {
+    flex: 0 0 auto;
+    width: 36px;
+    height: 36px;
+    min-width: 36px;
+    padding: 0;
+    font-size: 18px;
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.08);
+}
+
+.focus-close-btn,
+#exit-focus-mode {
+    margin-left: auto;
+    width: 36px;
+    height: 36px;
+    min-width: 36px;
+    padding: 0;
+    font-size: 16px;
+    background: rgba(231, 76, 60, 0.88);
+    border: none;
+    border-radius: 8px;
+    box-shadow: none;
+    flex: 0 0 auto;
+}
+
+.focus-close-btn:hover,
+#exit-focus-mode:hover {
+    background: rgba(231, 76, 60, 1);
+}
+
+.focus-close-btn:active,
+#exit-focus-mode:active {
+    transform: scale(0.96);
+}
+
+/* 5) Final right-side control rail */
+.device-card-wrapper {
+    --device-side-panel-width: 38px;
+}
+
+.device-card-wrapper > .device-control-panel {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    left: auto;
+    width: var(--device-side-panel-width);
+    max-width: var(--device-side-panel-width);
+    max-height: 100%;
+    display: flex;
+    flex-direction: column;
+    flex-wrap: nowrap;
+    justify-content: flex-start;
+    align-items: stretch;
+    gap: 0;
+    padding: 0;
+    background: transparent;
+    border: none;
+    border-radius: 0;
+    box-shadow: none;
+    backdrop-filter: none;
+    opacity: 1;
+    filter: none;
+    overflow-y: auto;
+    overflow-x: hidden;
+    overscroll-behavior: contain;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+    scrollbar-gutter: auto;
+    box-sizing: border-box;
+}
+
+.device-card-wrapper > .device-control-panel::before,
+.device-card-wrapper > .device-control-panel::after {
+    content: '';
+    flex: 1 1 0;
+    min-height: 0;
+    min-width: 0;
+    pointer-events: none;
+}
+
+.device-card-wrapper > .device-control-panel::-webkit-scrollbar {
+    display: none;
+    width: 0;
+    height: 0;
+}
+
+.device-card-wrapper > .device-control-panel > .control-btn-icon {
+    width: 100% !important;
+    max-width: 100%;
+    height: 34px;
+    min-width: 0;
+    min-height: 34px;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    align-self: stretch;
+    flex: 0 0 34px;
+    box-sizing: border-box;
+    border: none;
+    border-radius: 0;
+    box-shadow: none;
+    backdrop-filter: none;
+    color: rgba(255, 255, 255, 0.96);
+    opacity: 1;
+    filter: none;
+}
+
+.device-card-wrapper > .device-control-panel > .control-btn-icon:not(:disabled) {
+    background: rgba(18, 18, 18, 0.88);
+    cursor: pointer;
+}
+
+.device-card-wrapper > .device-control-panel > .control-btn-icon:not(:disabled):hover {
+    background: rgba(42, 42, 42, 0.92);
+    transform: none;
+}
+
+.device-card-wrapper > .device-control-panel > .control-btn-icon:not(:disabled):active {
+    background: rgba(56, 56, 56, 0.94);
+    transform: scale(0.97);
+}
+
+.device-card-wrapper > .device-control-panel > .control-btn-icon:disabled {
+    background: rgba(20, 20, 20, 0.84);
+    color: rgba(255, 255, 255, 0.78);
+    opacity: 0.82;
+    filter: none;
+    cursor: not-allowed;
+    transform: none;
+}
+
+.device-card-wrapper > .device-control-panel > .control-btn-icon:disabled:hover,
+.device-card-wrapper > .device-control-panel > .control-btn-icon:disabled:active {
+    background: rgba(20, 20, 20, 0.84);
+    color: rgba(255, 255, 255, 0.78);
+    opacity: 0.82;
+    filter: none;
+    transform: none;
+}
+
+.device-card-wrapper.landscape > .device-control-panel {
+    gap: 0;
+    background: transparent;
+}
+
+.device-card-wrapper.landscape > .device-control-panel > .control-btn-icon {
+    width: 100% !important;
+    border-right: none;
+}
+
+@media (max-width: 900px) {
+    .header-actions {
+        width: 100%;
+        justify-content: flex-start;
+    }
+
+    .header-checkbox-btn,
+    .batch-operations-btn,
+    .file-manager-btn {
+        max-width: none;
+    }
+}
+
+@media (max-width: 768px) {
+    .device-card-wrapper:not(.landscape) {
+        --device-side-panel-width: 36px;
+    }
+
+    .device-card-wrapper:not(.landscape) > .device-control-panel > .control-btn-icon {
+        height: 32px;
+        min-height: 32px;
+        flex: 0 0 32px;
+        font-size: 14px;
+    }
+}
+
+@media (max-width: 640px) {
+    .header-checkbox-btn,
+    .batch-operations-btn,
+    .file-manager-btn {
+        min-width: 104px;
+        padding: 8px 12px;
+        font-size: 13px;
+    }
+
+    .focus-header {
+        padding: 8px 10px;
+    }
+}
 .file-upload-area {
     border: 2px dashed #3498db;
     border-radius: 8px;
