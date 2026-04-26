@@ -4799,6 +4799,7 @@ function setupVideoMouseEvents(deviceUDID, video) {
     let lastTouchX = 0;
     let lastTouchY = 0;
     let touchStartTime = 0;
+    let activeTouchId = null;
     
     // 双指操作状态
     let isTwoFingerMode = false;
@@ -5010,6 +5011,24 @@ function setupVideoMouseEvents(deviceUDID, video) {
             y: Math.max(0, Math.min(deviceY, deviceSize.height - 1))
         };
     }
+
+    function getPrimaryTouch(touchList) {
+        if (!touchList || touchList.length === 0) return null;
+        if (activeTouchId == null) return touchList[0];
+        for (let i = 0; i < touchList.length; i++) {
+            if (touchList[i].identifier === activeTouchId) return touchList[i];
+        }
+        return null;
+    }
+
+    function endActiveTouch(touch, action) {
+        const coords = touch ? convertToDeviceCoordinates(touch.clientX, touch.clientY) : { x: lastTouchX, y: lastTouchY };
+        if (window.ControlCommands) {
+            window.ControlCommands.injectTouchEvent(deviceUDID, coords.x, coords.y, action, SC_POINTER_ID_MOUSE);
+        }
+        activeTouchId = null;
+        isDragging = false;
+    }
     
     // scrcpy pointerId 常量（使用 BigInt 以支持负数）
     const SC_POINTER_ID_MOUSE = -1;
@@ -5209,6 +5228,74 @@ function setupVideoMouseEvents(deviceUDID, video) {
         
         isDragging = false;
     });
+
+    const touchEventOptions = { passive: false, capture: true };
+    const touchTarget = video.closest('.device-video-wrapper') || video.closest('.device-video-container') || video;
+
+    const handleTouchStart = (e) => {
+        if (!e.touches || e.touches.length === 0) return;
+        e.preventDefault();
+        if (activeTouchId != null) return;
+
+        const touch = e.touches[0];
+        activeTouchId = touch.identifier;
+        const coords = convertToDeviceCoordinates(touch.clientX, touch.clientY);
+
+        if (isTwoFingerMode) {
+            hideTouchVisualization();
+            isTwoFingerMode = false;
+        }
+
+        lastTouchX = coords.x;
+        lastTouchY = coords.y;
+        touchStartTime = Date.now();
+        isDragging = false;
+
+        if (window.ControlCommands) {
+            window.ControlCommands.injectTouchEvent(deviceUDID, coords.x, coords.y, window.ControlCommands.MotionAction.DOWN, SC_POINTER_ID_MOUSE);
+        }
+    };
+
+    const handleTouchMove = (e) => {
+        const touch = getPrimaryTouch(e.touches);
+        if (!touch) return;
+        e.preventDefault();
+
+        const coords = convertToDeviceCoordinates(touch.clientX, touch.clientY);
+        const dx = Math.abs(coords.x - lastTouchX);
+        const dy = Math.abs(coords.y - lastTouchY);
+        if (dx > 5 || dy > 5) {
+            isDragging = true;
+        }
+
+        if (isDragging && window.ControlCommands) {
+            window.ControlCommands.injectTouchEvent(deviceUDID, coords.x, coords.y, window.ControlCommands.MotionAction.MOVE, SC_POINTER_ID_MOUSE);
+        }
+
+        lastTouchX = coords.x;
+        lastTouchY = coords.y;
+    };
+
+    const handleTouchEnd = (e) => {
+        const touch = getPrimaryTouch(e.changedTouches);
+        if (!touch && activeTouchId != null) return;
+        e.preventDefault();
+        if (!window.ControlCommands) return;
+        endActiveTouch(touch, window.ControlCommands.MotionAction.UP);
+    };
+
+    const handleTouchCancel = (e) => {
+        const touch = getPrimaryTouch(e.changedTouches);
+        if (!touch && activeTouchId != null) return;
+        e.preventDefault();
+        if (!window.ControlCommands) return;
+        endActiveTouch(touch, window.ControlCommands.MotionAction.CANCEL);
+    };
+
+    touchTarget.addEventListener('touchstart', handleTouchStart, touchEventOptions);
+    touchTarget.addEventListener('touchmove', handleTouchMove, touchEventOptions);
+    touchTarget.addEventListener('touchend', handleTouchEnd, touchEventOptions);
+    touchTarget.addEventListener('touchcancel', handleTouchCancel, touchEventOptions);
     
     // 鼠标离开时，如果正在拖动，发送UP事件
     video.addEventListener('mouseleave', (e) => {
@@ -5288,6 +5375,13 @@ function setupVideoMouseEvents(deviceUDID, video) {
     video.style.cursor = 'pointer';
     video.style.userSelect = 'none';
     video.style.webkitUserSelect = 'none';
+    video.style.touchAction = 'none';
+    if (video.parentElement) {
+        video.parentElement.style.touchAction = 'none';
+    }
+    if (touchTarget && touchTarget !== video && touchTarget !== video.parentElement) {
+        touchTarget.style.touchAction = 'none';
+    }
     
 }
 
@@ -6738,4 +6832,3 @@ function setupVideoClickHandler(deviceUDID, videoWrapper) {
     // 移除鼠标样式提示（因为不再用于进入全屏）
     videoWrapper.style.cursor = '';
 }
-

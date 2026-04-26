@@ -634,6 +634,17 @@ h2 {
     image-rendering: crisp-edges;
 }
 
+.device-video-container,
+.device-video-wrapper,
+.device-video-wrapper video,
+.focus-video-container,
+.focus-video-wrapper,
+.focus-video-wrapper video,
+.keyboard-input-overlay {
+    touch-action: none;
+    overscroll-behavior: contain;
+}
+
 .device-video-wrapper img {
     width: 100%;
     height: 100%;
@@ -2986,4 +2997,3 @@ h2 {
 .close-btn:hover {
     color: #2c3e50;
 }
-
