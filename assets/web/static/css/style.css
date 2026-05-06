@@ -2816,6 +2816,40 @@ h2 {
     background: rgba(255,255,255,0.1);
 }
 
+@media (max-width: 768px) {
+    .shell-window {
+        width: calc(100vw - 16px) !important;
+        max-width: calc(100vw - 16px);
+        min-width: 0;
+        max-height: calc(100dvh - 16px);
+        left: 8px !important;
+        right: 8px;
+    }
+
+    .shell-window-header {
+        min-width: 0;
+    }
+
+    .shell-window-header h3.shell-window-title {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .shell-window-header-btns {
+        flex-shrink: 0;
+        position: relative;
+        z-index: 3;
+    }
+
+    .shell-window-header-btns button {
+        width: 40px;
+        height: 40px;
+        min-width: 40px;
+    }
+}
+
 .shell-window.shell-window-collapsed .shell-window-content,
 .shell-window.shell-window-collapsed .shell-window-resize-handle {
     display: none;
